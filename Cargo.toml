@@ -1,0 +1,14 @@
+[package]
+name = "shadcn_egui"
+version = "0.1.0"
+edition = "2021"
+description = "shadcn/ui-style components for egui"
+license = "MIT"
+repository = "https://github.com/georgebigscar-spec/shadcn_egui"
+
+[dependencies]
+egui = "0.36"
+
+[dev-dependencies]
+eframe = "0.36"
+egui_kittest = { version = "0.36", features = ["wgpu", "snapshot"] }
