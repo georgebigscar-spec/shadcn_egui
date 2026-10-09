@@ -23,6 +23,7 @@ pub struct Gallery {
     alert_open: bool,
     name: String,
     file: Option<&'static str>,
+    payments: std::collections::HashSet<usize>,
 }
 
 impl Default for Gallery {
@@ -46,9 +47,19 @@ impl Default for Gallery {
             alert_open: false,
             name: "Pedro Duarte".into(),
             file: Some("src/tree.rs"),
+            payments: [1].into(),
         }
     }
 }
+
+const PAYMENTS: [[&str; 2]; 6] = [
+    ["ken99@example.com", "$316.00"],
+    ["abe45@example.com", "$242.00"],
+    ["monserrat44@example.com", "$837.00"],
+    ["silas22@example.com", "$874.00"],
+    ["carmella@example.com", "$721.00"],
+    ["jason78@example.com", "$59.00"],
+];
 
 const FRUITS: [&str; 5] = ["Apple", "Banana", "Blueberry", "Grapes", "Pineapple"];
 
@@ -296,6 +307,19 @@ impl Gallery {
                     vec!["INV003", "Unpaid", "Bank Transfer", "$350.00"],
                 ],
             );
+
+        ui.add_space(16.0);
+        DataTable::new(
+            "payments",
+            vec![
+                Column::new("Email").weight(2.0).sortable(),
+                Column::new("Amount").sortable().right(),
+            ],
+        )
+        .filter("Filter emails...")
+        .selection(&mut self.payments)
+        .page_size(4)
+        .show(ui, &PAYMENTS.map(|r| r.to_vec()));
     }
 
     fn dialogs(&mut self, ctx: &Context) {

@@ -57,3 +57,13 @@ fn tree_open() {
     h.run_steps(4);
     h.snapshot("tree");
 }
+
+#[test]
+fn data_table_sorted() {
+    let mut h = harness(false);
+    h.get_by_label("Amount").click();
+    h.run_steps(2);
+    h.get_by_label("Next").click();
+    h.run_steps(4);
+    h.snapshot("data_table");
+}

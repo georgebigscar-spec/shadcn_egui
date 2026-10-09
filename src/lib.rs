@@ -12,6 +12,7 @@
 
 mod basic;
 mod button;
+mod data_table;
 mod form;
 mod layout;
 mod overlay;
@@ -20,6 +21,7 @@ mod tree;
 
 pub use basic::{h1, h2, h3, kbd, label, muted, separator, Avatar, Badge, BadgeVariant, Progress, Skeleton};
 pub use button::{Button, ButtonSize, ButtonVariant};
+pub use data_table::{Column, DataTable, DataTableResponse};
 pub use form::{radio_group, toggle_group, Checkbox, Input, RadioItem, Slider, Switch, Textarea, Toggle};
 pub use layout::{tabs, Accordion, Alert, Card, Table};
 pub use overlay::{
