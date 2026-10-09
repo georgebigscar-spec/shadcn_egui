@@ -8,7 +8,7 @@ fn harness(dark: bool) -> Harness<'static> {
     let mut gallery = Gallery::default();
     gallery.dark = dark;
     let mut harness = Harness::builder()
-        .with_size(egui::vec2(1240.0, 880.0))
+        .with_size(egui::vec2(1240.0, 1180.0))
         .build_ui(move |ui| gallery.ui(ui));
     harness.run_steps(4);
     harness
@@ -46,4 +46,14 @@ fn dialog_open() {
     h.get_by_label("Edit profile").click();
     h.run_steps(8);
     h.snapshot("dialog");
+}
+
+#[test]
+fn tree_open() {
+    let mut h = harness(true);
+    h.get_by_label("components").click();
+    h.run_steps(8);
+    h.get_by_label("button.rs").click();
+    h.run_steps(4);
+    h.snapshot("tree");
 }

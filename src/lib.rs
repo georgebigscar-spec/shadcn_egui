@@ -16,6 +16,7 @@ mod form;
 mod layout;
 mod overlay;
 mod theme;
+mod tree;
 
 pub use basic::{h1, h2, h3, kbd, label, muted, separator, Avatar, Badge, BadgeVariant, Progress, Skeleton};
 pub use button::{Button, ButtonSize, ButtonVariant};
@@ -26,5 +27,6 @@ pub use overlay::{
     popover, toast, toast_error, Dialog, DialogResponse, Select, Toaster, TooltipExt,
 };
 pub use theme::{mix, paint_focus_ring, Theme};
+pub use tree::{Tree, TreeUi};
 
 pub mod demo;

@@ -22,6 +22,7 @@ pub struct Gallery {
     dialog_open: bool,
     alert_open: bool,
     name: String,
+    file: Option<&'static str>,
 }
 
 impl Default for Gallery {
@@ -44,6 +45,7 @@ impl Default for Gallery {
             dialog_open: false,
             alert_open: false,
             name: "Pedro Duarte".into(),
+            file: Some("src/tree.rs"),
         }
     }
 }
@@ -156,6 +158,23 @@ impl Gallery {
                 ui.add(Skeleton::new([140.0, 14.0]));
                 ui.add(Skeleton::new([100.0, 14.0]));
             });
+        });
+
+        ui.add_space(12.0);
+        label(ui, "Tree");
+        Tree::new("files").default_open_depth(1).show(ui, &mut self.file, |tree| {
+            tree.folder("src", "src", |tree| {
+                tree.folder("src/components", "components", |tree| {
+                    tree.leaf("src/components/button.rs", "button.rs");
+                    tree.leaf("src/components/card.rs", "card.rs");
+                });
+                tree.leaf("src/lib.rs", "lib.rs");
+                tree.leaf("src/tree.rs", "tree.rs");
+            });
+            tree.folder("examples", "examples", |tree| {
+                tree.leaf("examples/gallery.rs", "gallery.rs");
+            });
+            tree.leaf("Cargo.toml", "Cargo.toml");
         });
     }
 
