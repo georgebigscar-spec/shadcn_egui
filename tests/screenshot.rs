@@ -97,3 +97,31 @@ fn data_table_scroll() {
     h.run_steps(30);
     h.snapshot("data_table_scroll");
 }
+
+#[test]
+fn tree_scroll() {
+    let mut selected = None;
+    let mut h = Harness::builder().with_size(egui::vec2(320.0, 300.0)).build_ui(move |ui| {
+        shadcn_egui::Theme::light().install(ui.ctx());
+        egui::Frame::new().fill(egui::Color32::WHITE).inner_margin(16).show(ui, |ui| {
+            shadcn_egui::Tree::new("big").default_open_depth(1).max_height(240.0).show(ui, &mut selected, |tree| {
+                tree.folder(0, "src", |tree| {
+                    for i in 1..=20 {
+                        tree.leaf(i, &format!("file{i:02}.rs"));
+                    }
+                });
+            });
+        });
+    });
+    h.run_steps(2);
+    h.get_by_label("src").click();
+    h.run_steps(2);
+    h.get_by_label("src").click(); // reopen: the first click closed it
+    h.run_steps(8);
+    for _ in 0..12 {
+        h.key_press(egui::Key::ArrowDown);
+        h.run_steps(2);
+    }
+    h.run_steps(20);
+    h.snapshot("tree_scroll");
+}

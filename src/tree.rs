@@ -30,11 +30,12 @@ pub struct Tree {
     id: Id,
     open_depth: usize,
     icons: bool,
+    max_height: Option<f32>,
 }
 
 impl Tree {
     pub fn new(id_salt: impl egui::AsId) -> Self {
-        Self { id: Id::new(id_salt), open_depth: 0, icons: true }
+        Self { id: Id::new(id_salt), open_depth: 0, icons: true, max_height: None }
     }
 
     /// Folders less than `depth` levels deep start open. Default 0: all closed.
@@ -49,6 +50,12 @@ impl Tree {
         self
     }
 
+    /// Limits the height; taller trees scroll, and arrow keys keep the focused row in view.
+    pub fn max_height(mut self, height: f32) -> Self {
+        self.max_height = Some(height);
+        self
+    }
+
     /// Draws the tree. The response is marked changed when the selection changes.
     pub fn show<T: PartialEq + Clone, R>(
         self,
@@ -57,7 +64,9 @@ impl Tree {
         add_nodes: impl FnOnce(&mut TreeUi<'_, T>) -> R,
     ) -> InnerResponse<R> {
         let mut changed = false;
-        let mut inner = ui.vertical(|ui| {
+        let max_height = self.max_height;
+        let id = self.id;
+        let draw = |ui: &mut Ui| ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             let mut tree = TreeUi {
                 ui,
@@ -71,6 +80,17 @@ impl Tree {
             };
             add_nodes(&mut tree)
         });
+        let mut inner = match max_height {
+            Some(h) => {
+                let out = egui::ScrollArea::vertical()
+                    .id_salt(id.with("scroll"))
+                    .max_height(h)
+                    .auto_shrink([false, true])
+                    .show(ui, draw);
+                InnerResponse::new(out.inner.inner, out.inner.response)
+            }
+            None => draw(ui),
+        };
         if changed {
             inner.response.mark_changed();
         }
@@ -174,6 +194,9 @@ impl<T: PartialEq + Clone> TreeUi<'_, T> {
             let newly_focused = ui.data(|d| d.get_temp::<Id>(focused_row_id)) != Some(response.id);
             if newly_focused {
                 ui.data_mut(|d| d.insert_temp(focused_row_id, response.id));
+                if !response.clicked() {
+                    response.scroll_to_me(None); // keep keyboard focus visible inside a ScrollArea
+                }
                 let pressed_at = ui.data_mut(|d| d.remove_temp::<u64>(arrow_nav_id));
                 select |= pressed_at.is_some_and(|p| ui.ctx().cumulative_pass_nr() <= p + 2);
             }
@@ -216,7 +239,7 @@ impl<T: PartialEq + Clone> TreeUi<'_, T> {
             x += 24.0;
         }
         let text_rect = Rect::from_min_max(Pos2::new(x, rect.top()), Pos2::new(rect.right() - 8.0, rect.bottom()));
-        p.with_clip_rect(text_rect)
+        p.with_clip_rect(text_rect.intersect(p.clip_rect()))
             .text(Pos2::new(x, cy), Align2::LEFT_CENTER, label, FontId::proportional(14.0), fg);
         if response.has_focus() && !ui.data(|d| d.get_temp(pointer_focus_id).unwrap_or(false)) {
             paint_focus_ring(p, rect, t.radius_md(), &t);
