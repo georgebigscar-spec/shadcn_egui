@@ -75,7 +75,7 @@ Toaster::show(ctx); // once per frame, if you use toasts
 | Tabs | `tabs(ui, &mut idx, &["Account", "Password"])` | you draw the content for `idx` |
 | Accordion | `Accordion::new(id).item(ui, "Title", \|ui\| ..)` | one open section at a time, animated |
 | Table | `Table::new(&headers).widths(..).right_align(&[3]).show(ui, &rows)` | row hover, returns the clicked row |
-| Data Table | `DataTable::new(id, vec![Column::new("Email").sortable(), Column::new("Amount").sortable().right()]).filter("Filter...").selection(&mut set).page_size(10).show(ui, &rows)` | sorting (numbers by value), filter across all cells, checkbox column with select-all, Previous/Next pages; returns the clicked row |
+| Data Table | `DataTable::new(id, vec![Column::new("Email").sortable(), Column::new("Amount").sortable().right()]).filter("Filter...").selection(&mut set).page_size(10).show(ui, &rows)` | sorting (numbers by value), filter across all cells, checkbox column with select-all, Previous/Next pages, `.max_height(px)` scrolls the rows under a fixed header; returns the clicked row |
 | Tree | `Tree::new(id).default_open_depth(1).show(ui, &mut selected, \|tree\| { tree.folder(v, "src", \|tree\| ..); tree.leaf(v, "main.rs"); })` | not in shadcn/ui itself, styled like its sidebar file tree; any `PartialEq` value, folder/file icons, guide lines, arrow keys |
 | Separator | `separator(ui)` | horizontal or vertical depending on layout |
 | Avatar | `Avatar::new("CN").image(src).size(40.0)` | initials until the image loads |

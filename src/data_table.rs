@@ -64,11 +64,12 @@ pub struct DataTable<'a> {
     selection: Option<&'a mut HashSet<usize>>,
     filter_hint: Option<String>,
     page_size: Option<usize>,
+    max_height: Option<f32>,
 }
 
 impl<'a> DataTable<'a> {
     pub fn new(id_salt: impl egui::AsId, columns: Vec<Column>) -> Self {
-        Self { id: Id::new(id_salt), columns, selection: None, filter_hint: None, page_size: None }
+        Self { id: Id::new(id_salt), columns, selection: None, filter_hint: None, page_size: None, max_height: None }
     }
     /// Adds a checkbox column; checked rows are stored in `selected`.
     pub fn selection(mut self, selected: &'a mut HashSet<usize>) -> Self {
@@ -83,6 +84,12 @@ impl<'a> DataTable<'a> {
     /// Rows per page; adds Previous/Next buttons below the table.
     pub fn page_size(mut self, rows: usize) -> Self {
         self.page_size = Some(rows.max(1));
+        self
+    }
+
+    /// Limits the height of the rows; taller content scrolls under a fixed header.
+    pub fn max_height(mut self, height: f32) -> Self {
+        self.max_height = Some(height);
         self
     }
 
@@ -186,42 +193,57 @@ impl<'a> DataTable<'a> {
                 }
                 ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, t.border));
 
-                // Body.
-                if page_rows.is_empty() {
-                    let (rect, _) = ui.allocate_exact_size(Vec2::new(total, 96.0), Sense::hover());
-                    ui.painter().text(rect.center(), Align2::CENTER_CENTER, "No results.", font.clone(), t.muted_foreground);
-                }
-                for (n, &i) in page_rows.iter().enumerate() {
-                    let (rect, r) = ui.allocate_exact_size(Vec2::new(total, 44.0), Sense::click());
-                    if r.clicked() {
-                        response.clicked = Some(i);
+                // Body; scrolls under the header when `max_height` is set.
+                let mut body = |ui: &mut Ui| {
+                    if page_rows.is_empty() {
+                        let (rect, _) = ui.allocate_exact_size(Vec2::new(total, 96.0), Sense::hover());
+                        ui.painter().text(rect.center(), Align2::CENTER_CENTER, "No results.", font.clone(), t.muted_foreground);
                     }
-                    let is_selected = self.selection.as_deref().is_some_and(|s| s.contains(&i));
-                    if is_selected {
-                        ui.painter().rect_filled(rect, 0.0, t.muted);
-                    } else if r.hovered() {
-                        ui.painter().rect_filled(rect, 0.0, t.muted.gamma_multiply(0.5));
-                    }
-                    if let Some(selected) = self.selection.as_deref_mut() {
-                        let mut checked = is_selected;
-                        let cb = Rect::from_center_size(Pos2::new(rect.left() + 20.0, rect.center().y), Vec2::splat(16.0));
-                        if ui.new_child(UiBuilder::new().max_rect(cb)).add(Checkbox::new(&mut checked)).changed() {
-                            if checked { selected.insert(i) } else { selected.remove(&i) };
-                            response.selection_changed = true;
+                    for (n, &i) in page_rows.iter().enumerate() {
+                        let (rect, r) = ui.allocate_exact_size(Vec2::new(total, 44.0), Sense::click());
+                        if r.clicked() {
+                            response.clicked = Some(i);
+                        }
+                        let is_selected = self.selection.as_deref().is_some_and(|s| s.contains(&i));
+                        if is_selected {
+                            ui.painter().rect_filled(rect, 0.0, t.muted);
+                        } else if r.hovered() {
+                            ui.painter().rect_filled(rect, 0.0, t.muted.gamma_multiply(0.5));
+                        }
+                        if let Some(selected) = self.selection.as_deref_mut() {
+                            let mut checked = is_selected;
+                            let cb = Rect::from_center_size(Pos2::new(rect.left() + 20.0, rect.center().y), Vec2::splat(16.0));
+                            if ui.new_child(UiBuilder::new().max_rect(cb)).add(Checkbox::new(&mut checked)).changed() {
+                                if checked { selected.insert(i) } else { selected.remove(&i) };
+                                response.selection_changed = true;
+                            }
+                        }
+                        let p = ui.painter();
+                        let mut x = rect.left() + check_w;
+                        for (col, (text, w)) in self.columns.iter().zip(rows[i].iter().zip(&widths)) {
+                            let cell = Rect::from_min_size(Pos2::new(x, rect.top()), Vec2::new(*w, rect.height()));
+                            x += w;
+                            let (pos, align) = text_anchor(cell, col.right);
+                            p.with_clip_rect(cell.shrink2(Vec2::new(4.0, 0.0)).intersect(p.clip_rect()))
+                                .text(pos, align, text.as_ref(), font.clone(), t.foreground);
+                        }
+                        if n + 1 < page_rows.len() {
+                            p.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, t.border));
                         }
                     }
-                    let p = ui.painter();
-                    let mut x = rect.left() + check_w;
-                    for (col, (text, w)) in self.columns.iter().zip(rows[i].iter().zip(&widths)) {
-                        let cell = Rect::from_min_size(Pos2::new(x, rect.top()), Vec2::new(*w, rect.height()));
-                        x += w;
-                        let (pos, align) = text_anchor(cell, col.right);
-                        p.with_clip_rect(cell.shrink2(Vec2::new(4.0, 0.0)))
-                            .text(pos, align, text.as_ref(), font.clone(), t.foreground);
+                };
+                match self.max_height {
+                    Some(h) => {
+                        egui::ScrollArea::vertical()
+                            .id_salt(self.id.with("body"))
+                            .max_height(h)
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
+                                ui.spacing_mut().item_spacing.y = 0.0;
+                                body(ui)
+                            });
                     }
-                    if n + 1 < page_rows.len() {
-                        p.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, t.border));
-                    }
+                    None => body(ui),
                 }
             });
 

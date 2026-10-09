@@ -67,3 +67,33 @@ fn data_table_sorted() {
     h.run_steps(4);
     h.snapshot("data_table");
 }
+
+#[test]
+fn data_table_scroll() {
+    let rows: Vec<Vec<String>> =
+        (1..=20).map(|i| vec![format!("user{i:02}@example.com"), format!("${}.00", i * 37)]).collect();
+    let mut selected = std::collections::HashSet::from([2]);
+    let mut h = Harness::builder().with_size(egui::vec2(420.0, 420.0)).build_ui(move |ui| {
+        shadcn_egui::Theme::light().install(ui.ctx());
+        egui::Frame::new().fill(egui::Color32::WHITE).inner_margin(16).show(ui, |ui| {
+            shadcn_egui::DataTable::new(
+                "scroll",
+                vec![shadcn_egui::Column::new("Email").weight(2.0).sortable(), shadcn_egui::Column::new("Amount").right()],
+            )
+            .filter("Filter emails...")
+            .selection(&mut selected)
+            .max_height(220.0)
+            .show(ui, &rows);
+        });
+    });
+    h.run_steps(2);
+    h.event(egui::Event::PointerMoved(egui::pos2(200.0, 200.0)));
+    h.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, -150.0),
+        modifiers: egui::Modifiers::NONE,
+        phase: egui::TouchPhase::Move,
+    });
+    h.run_steps(30);
+    h.snapshot("data_table_scroll");
+}
