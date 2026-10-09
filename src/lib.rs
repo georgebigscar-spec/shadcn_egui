@@ -29,6 +29,6 @@ pub use overlay::{
     popover, toast, toast_error, Dialog, DialogResponse, Select, Toaster, TooltipExt,
 };
 pub use theme::{mix, paint_focus_ring, Theme};
-pub use tree::{Tree, TreeUi};
+pub use tree::{Tree, TreeSelection, TreeUi};
 
 pub mod demo;

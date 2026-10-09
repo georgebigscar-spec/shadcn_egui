@@ -12,7 +12,7 @@ use crate::theme::{paint_focus_ring, Theme};
 const ROW_HEIGHT: f32 = 32.0;
 const INDENT: f32 = 20.0;
 
-/// A tree of folders and leaves with one selected value.
+/// A tree of folders and leaves.
 ///
 /// ```ignore
 /// Tree::new("files").default_open_depth(1).show(ui, &mut selected, |tree| {
@@ -23,9 +23,14 @@ const INDENT: f32 = 20.0;
 /// });
 /// ```
 ///
+/// `selected` is an `Option<T>` for single selection, or a `HashSet<T>` /
+/// `Vec<T>` for multiple selection (see [`TreeSelection`]).
+///
 /// Click a row (or press Space/Enter) to select it; clicking a folder also
 /// opens or closes it. Up/Down move between rows, Right opens a folder and
-/// Left closes it.
+/// Left closes it. With multiple selection, Ctrl/Cmd+click toggles a row,
+/// Shift+click selects the range from the last clicked row, and Ctrl/Cmd+A
+/// selects every visible row.
 pub struct Tree {
     id: Id,
     open_depth: usize,
@@ -60,26 +65,29 @@ impl Tree {
     pub fn show<T: PartialEq + Clone, R>(
         self,
         ui: &mut Ui,
-        selected: &mut Option<T>,
+        selected: &mut impl TreeSelection<T>,
         add_nodes: impl FnOnce(&mut TreeUi<'_, T>) -> R,
     ) -> InnerResponse<R> {
-        let mut changed = false;
+        let multiple = selected.multiple();
+        let mut shared = Shared { changed: false, multiple, order: Vec::new(), range_to: None, focused: false };
         let max_height = self.max_height;
         let id = self.id;
-        let draw = |ui: &mut Ui| ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
-            let mut tree = TreeUi {
-                ui,
-                selected,
-                changed: &mut changed,
-                id: self.id,
-                root: self.id,
-                depth: 0,
-                open_depth: self.open_depth,
-                icons: self.icons,
-            };
-            add_nodes(&mut tree)
-        });
+        let draw = |ui: &mut Ui| {
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                let mut tree = TreeUi {
+                    ui,
+                    selected: &mut *selected,
+                    shared: &mut shared,
+                    id: self.id,
+                    root: self.id,
+                    depth: 0,
+                    open_depth: self.open_depth,
+                    icons: self.icons,
+                };
+                add_nodes(&mut tree)
+            })
+        };
         let mut inner = match max_height {
             Some(h) => {
                 let out = egui::ScrollArea::vertical()
@@ -91,18 +99,150 @@ impl Tree {
             }
             None => draw(ui),
         };
-        if changed {
+
+        // Shift+click and Ctrl+A need every visible row, so they are applied
+        // after all rows have been laid out.
+        let anchor_id = id.with("anchor");
+        if let Some(target) = shared.range_to {
+            let anchor = ui.data(|d| d.get_temp::<Id>(anchor_id));
+            let pos = |row: Id| shared.order.iter().position(|(r, _)| *r == row);
+            let to = pos(target);
+            let from = anchor.and_then(pos).or(to);
+            if let (Some(a), Some(b)) = (from, to) {
+                selected.clear();
+                for (_, v) in &shared.order[a.min(b)..=a.max(b)] {
+                    selected.add(v.clone());
+                }
+                shared.changed = true;
+            }
+        }
+        if multiple && shared.focused && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::A)) {
+            selected.clear();
+            for (_, v) in &shared.order {
+                selected.add(v.clone());
+            }
+            shared.changed = true;
+        }
+        if shared.changed {
             inner.response.mark_changed();
+            ui.request_repaint(); // rows drawn earlier this frame still show the old selection
         }
         inner
     }
 }
 
+/// What [`Tree::show`] stores the selection in.
+///
+/// Implemented for `Option<T>` (one row), and for `HashSet<T>` and `Vec<T>`
+/// (several rows, with Ctrl/Shift+click and Ctrl+A).
+pub trait TreeSelection<T> {
+    fn is_selected(&self, value: &T) -> bool;
+    /// Plain click: select only `value`.
+    fn select_only(&mut self, value: T);
+    /// Ctrl/Cmd+click.
+    fn toggle(&mut self, value: T);
+    /// Adds `value` (used for Shift+click ranges and Ctrl+A).
+    fn add(&mut self, value: T);
+    fn clear(&mut self);
+    /// Whether Ctrl/Shift+click and Ctrl+A select several rows.
+    fn multiple(&self) -> bool;
+}
+
+impl<T: PartialEq> TreeSelection<T> for Option<T> {
+    fn is_selected(&self, value: &T) -> bool {
+        self.as_ref() == Some(value)
+    }
+    fn select_only(&mut self, value: T) {
+        *self = Some(value);
+    }
+    fn toggle(&mut self, value: T) {
+        *self = Some(value);
+    }
+    fn add(&mut self, value: T) {
+        *self = Some(value);
+    }
+    fn clear(&mut self) {
+        *self = None;
+    }
+    fn multiple(&self) -> bool {
+        false
+    }
+}
+
+impl<T: Eq + std::hash::Hash> TreeSelection<T> for std::collections::HashSet<T> {
+    fn is_selected(&self, value: &T) -> bool {
+        self.contains(value)
+    }
+    fn select_only(&mut self, value: T) {
+        self.clear();
+        self.insert(value);
+    }
+    fn toggle(&mut self, value: T) {
+        if !self.remove(&value) {
+            self.insert(value);
+        }
+    }
+    fn add(&mut self, value: T) {
+        self.insert(value);
+    }
+    fn clear(&mut self) {
+        std::collections::HashSet::clear(self);
+    }
+    fn multiple(&self) -> bool {
+        true
+    }
+}
+
+/// Keeps rows in the order they were selected.
+impl<T: PartialEq> TreeSelection<T> for Vec<T> {
+    fn is_selected(&self, value: &T) -> bool {
+        self.contains(value)
+    }
+    fn select_only(&mut self, value: T) {
+        self.clear();
+        self.push(value);
+    }
+    fn toggle(&mut self, value: T) {
+        match self.iter().position(|v| *v == value) {
+            Some(i) => {
+                self.remove(i);
+            }
+            None => self.push(value),
+        }
+    }
+    fn add(&mut self, value: T) {
+        if !self.contains(&value) {
+            self.push(value);
+        }
+    }
+    fn clear(&mut self) {
+        Vec::clear(self);
+    }
+    fn multiple(&self) -> bool {
+        true
+    }
+}
+
+/// Per-frame state shared by all rows of one tree.
+struct Shared<T> {
+    changed: bool,
+    multiple: bool,
+    /// Visible rows in display order, for Shift+click ranges and Ctrl+A.
+    order: Vec<(Id, T)>,
+    /// The row a Shift+click ended on.
+    range_to: Option<Id>,
+    /// Whether any row of the tree has keyboard focus.
+    focused: bool,
+}
+
+/// Draws a row's content; see [`TreeUi::leaf_ui`].
+type RowContent<'c> = Option<Box<dyn FnOnce(&mut Ui) + 'c>>;
+
 /// Adds nodes to a [`Tree`]; passed to the closures of [`Tree::show`] and [`TreeUi::folder`].
 pub struct TreeUi<'a, T> {
     ui: &'a mut Ui,
-    selected: &'a mut Option<T>,
-    changed: &'a mut bool,
+    selected: &'a mut dyn TreeSelection<T>,
+    shared: &'a mut Shared<T>,
     id: Id,
     root: Id,
     depth: usize,
@@ -119,22 +259,60 @@ impl<T: PartialEq + Clone> TreeUi<'_, T> {
     /// A row without children.
     pub fn leaf(&mut self, value: T, label: &str) -> Response {
         let id = self.id.with(label);
-        self.row(id, value, label, None)
+        self.row(id, value, label, None, None)
+    }
+
+    /// A row without children whose content you draw: `add_contents` gets a
+    /// left-to-right `Ui` covering the row after the icon, in place of the label
+    /// (which is still used for the open state and accessibility).
+    ///
+    /// ```ignore
+    /// tree.leaf_ui(path, "main.rs", |ui| {
+    ///     ui.label("main.rs");
+    ///     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    ///         ui.label(RichText::new("M").color(modified_color));
+    ///     });
+    /// });
+    /// ```
+    pub fn leaf_ui(&mut self, value: T, label: &str, add_contents: impl FnOnce(&mut Ui)) -> Response {
+        let id = self.id.with(label);
+        self.row(id, value, label, None, Some(Box::new(add_contents)))
     }
 
     /// A folder whose children are added by `add_children`, which only runs while it is open.
     /// The open state is kept per label, so siblings need distinct labels.
     pub fn folder(&mut self, value: T, label: &str, add_children: impl FnOnce(&mut TreeUi<'_, T>)) -> Response {
+        self.folder_impl(value, label, None, add_children)
+    }
+
+    /// A folder whose row content you draw, like [`TreeUi::leaf_ui`].
+    pub fn folder_ui(
+        &mut self,
+        value: T,
+        label: &str,
+        add_contents: impl FnOnce(&mut Ui),
+        add_children: impl FnOnce(&mut TreeUi<'_, T>),
+    ) -> Response {
+        self.folder_impl(value, label, Some(Box::new(add_contents)), add_children)
+    }
+
+    fn folder_impl(
+        &mut self,
+        value: T,
+        label: &str,
+        content: RowContent<'_>,
+        add_children: impl FnOnce(&mut TreeUi<'_, T>),
+    ) -> Response {
         let id = self.id.with(label);
         let mut state = CollapsingState::load_with_default_open(self.ui.ctx(), id, self.depth < self.open_depth);
-        let response = self.row(id, value, label, Some(&mut state));
+        let response = self.row(id, value, label, Some(&mut state), content);
 
         let line_x = self.ui.max_rect().left() + self.depth as f32 * INDENT + 16.0;
         let body = state.show_body_unindented(self.ui, |ui| {
             let mut child = TreeUi {
                 ui,
                 selected: &mut *self.selected,
-                changed: &mut *self.changed,
+                shared: &mut *self.shared,
                 id,
                 root: self.root,
                 depth: self.depth + 1,
@@ -151,7 +329,14 @@ impl<T: PartialEq + Clone> TreeUi<'_, T> {
         response
     }
 
-    fn row(&mut self, id: Id, value: T, label: &str, mut folder: Option<&mut CollapsingState>) -> Response {
+    fn row(
+        &mut self,
+        id: Id,
+        value: T,
+        label: &str,
+        mut folder: Option<&mut CollapsingState>,
+        content: RowContent<'_>,
+    ) -> Response {
         let ui = &mut *self.ui;
         let t = Theme::get(ui.ctx());
         let left = ui.max_rect().left() + self.depth as f32 * INDENT;
@@ -162,7 +347,10 @@ impl<T: PartialEq + Clone> TreeUi<'_, T> {
             .interact(rect, id.with("row"), Sense::click())
             .on_hover_cursor(CursorIcon::PointingHand);
 
-        let is_selected = self.selected.as_ref() == Some(&value);
+        let is_selected = self.selected.is_selected(&value);
+        if self.shared.multiple {
+            self.shared.order.push((response.id, value.clone()));
+        }
         response.widget_info(|| WidgetInfo::selected(WidgetType::SelectableLabel, ui.is_enabled(), is_selected, label));
 
         // Clicking focuses the row so the arrow keys work afterwards, but the focus
@@ -172,8 +360,21 @@ impl<T: PartialEq + Clone> TreeUi<'_, T> {
             response.request_focus();
             ui.data_mut(|d| d.insert_temp(pointer_focus_id, true));
         }
-        let mut select = response.clicked();
+        let anchor_id = self.root.with("anchor");
+        let modifiers = ui.input(|i| i.modifiers);
+        let multi_click = self.shared.multiple && response.clicked() && (modifiers.command || modifiers.shift);
+        let mut select = response.clicked() && !multi_click;
+        if multi_click {
+            if modifiers.shift {
+                self.shared.range_to = Some(response.id);
+            } else {
+                self.selected.toggle(value.clone());
+                ui.data_mut(|d| d.insert_temp(anchor_id, response.id));
+                self.shared.changed = true;
+            }
+        }
         if response.has_focus() {
+            self.shared.focused = true;
             if ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. }))) {
                 ui.data_mut(|d| d.insert_temp(pointer_focus_id, false));
             }
@@ -205,17 +406,17 @@ impl<T: PartialEq + Clone> TreeUi<'_, T> {
                 ui.data_mut(|d| d.insert_temp(arrow_nav_id, pass));
             }
         }
-        if response.clicked() {
+        if response.clicked() && !multi_click {
             if let Some(state) = folder.as_deref_mut() {
                 state.toggle(ui);
             }
         }
-        if select && !is_selected {
-            *self.selected = Some(value);
-            *self.changed = true;
-            ui.request_repaint(); // rows drawn earlier this frame still show the old selection
+        if select {
+            ui.data_mut(|d| d.insert_temp(anchor_id, response.id));
+            self.shared.changed |= !is_selected || self.shared.multiple;
+            self.selected.select_only(value.clone());
         }
-        let is_selected = is_selected || select;
+        let is_selected = self.selected.is_selected(&value);
 
         let p = ui.painter();
         if is_selected || response.hovered() {
@@ -239,8 +440,26 @@ impl<T: PartialEq + Clone> TreeUi<'_, T> {
             x += 24.0;
         }
         let text_rect = Rect::from_min_max(Pos2::new(x, rect.top()), Pos2::new(rect.right() - 8.0, rect.bottom()));
-        p.with_clip_rect(text_rect.intersect(p.clip_rect()))
-            .text(Pos2::new(x, cy), Align2::LEFT_CENTER, label, FontId::proportional(14.0), fg);
+        let clip = text_rect.intersect(p.clip_rect());
+        match content {
+            Some(add_contents) => {
+                let mut child = ui.new_child(
+                    egui::UiBuilder::new()
+                        .id_salt(id.with("content"))
+                        .max_rect(text_rect)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                );
+                child.set_clip_rect(clip);
+                child.spacing_mut().item_spacing.x = 6.0;
+                child.style_mut().interaction.selectable_labels = false;
+                child.style_mut().visuals.override_text_color = Some(fg);
+                add_contents(&mut child);
+            }
+            None => {
+                p.with_clip_rect(clip).text(Pos2::new(x, cy), Align2::LEFT_CENTER, label, FontId::proportional(14.0), fg);
+            }
+        }
+        let p = ui.painter();
         if response.has_focus() && !ui.data(|d| d.get_temp(pointer_focus_id).unwrap_or(false)) {
             paint_focus_ring(p, rect, t.radius_md(), &t);
         }

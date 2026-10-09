@@ -2,6 +2,7 @@
 
 use std::cmp::Ordering;
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use egui::{Align2, CursorIcon, FontId, Frame, Id, Margin, Pos2, Rect, Sense, Stroke, Ui, UiBuilder, Vec2};
 
@@ -53,11 +54,26 @@ struct State {
     page: usize,
 }
 
+/// Draws one cell; see [`DataTable::cell_ui`].
+type CellUi<'a> = Box<dyn FnMut(&mut Ui, usize, usize) -> bool + 'a>;
+
+/// The filtered and sorted row order, recomputed only when its inputs change.
+#[derive(Clone)]
+struct Cache {
+    key: (usize, usize, u64, String, Option<(usize, bool)>),
+    visible: Arc<Vec<usize>>,
+}
+
 /// A table with a filter input, sortable headers, a checkbox column and
 /// Previous/Next pagination, like shadcn's data table example.
 ///
 /// Sort, filter and page are kept in egui memory; the selection is yours
 /// (indices into `rows`, so it survives sorting and filtering).
+///
+/// The filtered and sorted order is cached and only recomputed when the filter,
+/// the sort, the length or address of `rows`, or [`DataTable::version`] changes.
+/// With [`DataTable::max_height`] and no pages, only the rows in view are drawn,
+/// so tens of thousands of rows stay cheap.
 pub struct DataTable<'a> {
     id: Id,
     columns: Vec<Column>,
@@ -65,11 +81,24 @@ pub struct DataTable<'a> {
     filter_hint: Option<String>,
     page_size: Option<usize>,
     max_height: Option<f32>,
+    row_height: f32,
+    version: u64,
+    cell_ui: Option<CellUi<'a>>,
 }
 
 impl<'a> DataTable<'a> {
     pub fn new(id_salt: impl egui::AsId, columns: Vec<Column>) -> Self {
-        Self { id: Id::new(id_salt), columns, selection: None, filter_hint: None, page_size: None, max_height: None }
+        Self {
+            id: Id::new(id_salt),
+            columns,
+            selection: None,
+            filter_hint: None,
+            page_size: None,
+            max_height: None,
+            row_height: 44.0,
+            version: 0,
+            cell_ui: None,
+        }
     }
     /// Adds a checkbox column; checked rows are stored in `selected`.
     pub fn selection(mut self, selected: &'a mut HashSet<usize>) -> Self {
@@ -93,6 +122,36 @@ impl<'a> DataTable<'a> {
         self
     }
 
+    /// Height of a body row (default 44, like shadcn); 28–32 suits dense lists.
+    pub fn row_height(mut self, height: f32) -> Self {
+        self.row_height = height;
+        self
+    }
+
+    /// Bump this when the contents of `rows` change in place, so the cached
+    /// filter and sort order is rebuilt.
+    pub fn version(mut self, version: u64) -> Self {
+        self.version = version;
+        self
+    }
+
+    /// Draws cells yourself: `f(ui, row, column)` gets a `Ui` covering the cell
+    /// (full row height, 16 px side padding, vertically centered layout) and
+    /// returns `true` if it drew the cell, or `false` to fall back to the text.
+    /// The cell text is still what filtering and sorting use.
+    ///
+    /// ```ignore
+    /// .cell_ui(|ui, row, col| match col {
+    ///     0 => { paint_graph(ui, &commits[row]); true }
+    ///     1 => { ui.add(Badge::new("main").outline()); ui.label(&commits[row].subject); true }
+    ///     _ => false,
+    /// })
+    /// ```
+    pub fn cell_ui(mut self, f: impl FnMut(&mut Ui, usize, usize) -> bool + 'a) -> Self {
+        self.cell_ui = Some(Box::new(f));
+        self
+    }
+
     pub fn show<S: AsRef<str>>(mut self, ui: &mut Ui, rows: &[Vec<S>]) -> DataTableResponse {
         let t = Theme::get(ui.ctx());
         let mut state: State = ui.data(|d| d.get_temp(self.id)).unwrap_or_default();
@@ -108,26 +167,26 @@ impl<'a> DataTable<'a> {
             ui.add_space(4.0);
         }
 
-        // Filter, then sort, then cut out the current page.
-        let needle = state.filter.to_lowercase();
-        let mut visible: Vec<usize> = (0..rows.len())
-            .filter(|&i| needle.is_empty() || rows[i].iter().any(|c| c.as_ref().to_lowercase().contains(&needle)))
-            .collect();
-        if let Some((col, asc)) = state.sort {
-            let cell = |i: usize| rows[i].get(col).map(|c| c.as_ref()).unwrap_or("");
-            visible.sort_by(|&a, &b| {
-                let o = compare_cells(cell(a), cell(b));
-                if asc { o } else { o.reverse() }
-            });
-        }
+        // Filter and sort (cached), then cut out the current page.
+        let cache_id = self.id.with("cache");
+        let key = (rows.as_ptr() as usize, rows.len(), self.version, state.filter.clone(), state.sort);
+        let visible = match ui.data(|d| d.get_temp::<Cache>(cache_id)) {
+            Some(c) if c.key == key => c.visible,
+            _ => {
+                let visible = Arc::new(filter_and_sort(rows, &state.filter, state.sort));
+                ui.data_mut(|d| d.insert_temp(cache_id, Cache { key, visible: visible.clone() }));
+                visible
+            }
+        };
         let page_count = self.page_size.map_or(1, |n| visible.len().div_ceil(n).max(1));
         state.page = state.page.min(page_count - 1);
-        let page_rows: Vec<usize> = match self.page_size {
-            Some(n) => visible.iter().copied().skip(state.page * n).take(n).collect(),
-            None => visible.clone(),
+        let page_rows: &[usize] = match self.page_size {
+            Some(n) => &visible[(state.page * n).min(visible.len())..((state.page + 1) * n).min(visible.len())],
+            None => &visible,
         };
 
         let check_w = if self.selection.is_some() { 40.0 } else { 0.0 };
+        let row_h = self.row_height;
         let font = FontId::proportional(14.0);
         Frame::new()
             .stroke(Stroke::new(1.0, t.border))
@@ -146,7 +205,7 @@ impl<'a> DataTable<'a> {
                     let mut checked = all;
                     let cb = Rect::from_center_size(Pos2::new(rect.left() + 20.0, rect.center().y), Vec2::splat(16.0));
                     if ui.new_child(UiBuilder::new().max_rect(cb)).add(Checkbox::new(&mut checked)).changed() {
-                        for i in &page_rows {
+                        for i in page_rows {
                             if checked { selected.insert(*i) } else { selected.remove(i) };
                         }
                         response.selection_changed = true;
@@ -193,57 +252,77 @@ impl<'a> DataTable<'a> {
                 }
                 ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, t.border));
 
-                // Body; scrolls under the header when `max_height` is set.
-                let mut body = |ui: &mut Ui| {
-                    if page_rows.is_empty() {
-                        let (rect, _) = ui.allocate_exact_size(Vec2::new(total, 96.0), Sense::hover());
-                        ui.painter().text(rect.center(), Align2::CENTER_CENTER, "No results.", font.clone(), t.muted_foreground);
+                // Body: one row of `page_rows`.
+                let mut row = |ui: &mut Ui, n: usize| {
+                    let i = page_rows[n];
+                    let (rect, r) = ui.allocate_exact_size(Vec2::new(total, row_h), Sense::click());
+                    if r.clicked() {
+                        response.clicked = Some(i);
                     }
-                    for (n, &i) in page_rows.iter().enumerate() {
-                        let (rect, r) = ui.allocate_exact_size(Vec2::new(total, 44.0), Sense::click());
-                        if r.clicked() {
-                            response.clicked = Some(i);
+                    let is_selected = self.selection.as_deref().is_some_and(|s| s.contains(&i));
+                    if is_selected {
+                        ui.painter().rect_filled(rect, 0.0, t.muted);
+                    } else if r.hovered() {
+                        ui.painter().rect_filled(rect, 0.0, t.muted.gamma_multiply(0.5));
+                    }
+                    if let Some(selected) = self.selection.as_deref_mut() {
+                        let mut checked = is_selected;
+                        let cb = Rect::from_center_size(Pos2::new(rect.left() + 20.0, rect.center().y), Vec2::splat(16.0));
+                        if ui.new_child(UiBuilder::new().max_rect(cb)).add(Checkbox::new(&mut checked)).changed() {
+                            if checked { selected.insert(i) } else { selected.remove(&i) };
+                            response.selection_changed = true;
                         }
-                        let is_selected = self.selection.as_deref().is_some_and(|s| s.contains(&i));
-                        if is_selected {
-                            ui.painter().rect_filled(rect, 0.0, t.muted);
-                        } else if r.hovered() {
-                            ui.painter().rect_filled(rect, 0.0, t.muted.gamma_multiply(0.5));
-                        }
-                        if let Some(selected) = self.selection.as_deref_mut() {
-                            let mut checked = is_selected;
-                            let cb = Rect::from_center_size(Pos2::new(rect.left() + 20.0, rect.center().y), Vec2::splat(16.0));
-                            if ui.new_child(UiBuilder::new().max_rect(cb)).add(Checkbox::new(&mut checked)).changed() {
-                                if checked { selected.insert(i) } else { selected.remove(&i) };
-                                response.selection_changed = true;
-                            }
-                        }
-                        let p = ui.painter();
-                        let mut x = rect.left() + check_w;
-                        for (col, (text, w)) in self.columns.iter().zip(rows[i].iter().zip(&widths)) {
-                            let cell = Rect::from_min_size(Pos2::new(x, rect.top()), Vec2::new(*w, rect.height()));
-                            x += w;
+                    }
+                    let clip = ui.clip_rect();
+                    let mut x = rect.left() + check_w;
+                    for (c, (col, w)) in self.columns.iter().zip(&widths).enumerate() {
+                        let cell = Rect::from_min_size(Pos2::new(x, rect.top()), Vec2::new(*w, rect.height()));
+                        x += w;
+                        let drawn = self.cell_ui.as_mut().is_some_and(|f| {
+                            let layout = if col.right {
+                                egui::Layout::right_to_left(egui::Align::Center)
+                            } else {
+                                egui::Layout::left_to_right(egui::Align::Center)
+                            };
+                            let mut cell_ui = ui.new_child(
+                                UiBuilder::new().id_salt(("cell", i, c)).max_rect(cell.shrink2(Vec2::new(16.0, 0.0))).layout(layout),
+                            );
+                            cell_ui.set_clip_rect(cell.shrink2(Vec2::new(4.0, 0.0)).intersect(clip));
+                            cell_ui.spacing_mut().item_spacing.x = 6.0;
+                            cell_ui.style_mut().interaction.selectable_labels = false;
+                            cell_ui.style_mut().visuals.override_text_color = Some(t.foreground);
+                            f(&mut cell_ui, i, c)
+                        });
+                        if !drawn {
+                            let text = rows[i].get(c).map(|s| s.as_ref()).unwrap_or("");
                             let (pos, align) = text_anchor(cell, col.right);
-                            p.with_clip_rect(cell.shrink2(Vec2::new(4.0, 0.0)).intersect(p.clip_rect()))
-                                .text(pos, align, text.as_ref(), font.clone(), t.foreground);
+                            ui.painter()
+                                .with_clip_rect(cell.shrink2(Vec2::new(4.0, 0.0)).intersect(clip))
+                                .text(pos, align, text, font.clone(), t.foreground);
                         }
-                        if n + 1 < page_rows.len() {
-                            p.hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, t.border));
-                        }
+                    }
+                    if n + 1 < page_rows.len() {
+                        ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, t.border));
                     }
                 };
-                match self.max_height {
-                    Some(h) => {
-                        egui::ScrollArea::vertical()
-                            .id_salt(self.id.with("body"))
-                            .max_height(h)
-                            .auto_shrink([false, true])
-                            .show(ui, |ui| {
-                                ui.spacing_mut().item_spacing.y = 0.0;
-                                body(ui)
-                            });
+                if page_rows.is_empty() {
+                    let (rect, _) = ui.allocate_exact_size(Vec2::new(total, 96.0), Sense::hover());
+                    ui.painter().text(rect.center(), Align2::CENTER_CENTER, "No results.", font.clone(), t.muted_foreground);
+                } else if let Some(h) = self.max_height {
+                    // Only the rows in view are laid out.
+                    egui::ScrollArea::vertical()
+                        .id_salt(self.id.with("body"))
+                        .max_height(h)
+                        .auto_shrink([false, true])
+                        .show_rows(ui, row_h, page_rows.len(), |ui, range| {
+                            for n in range {
+                                row(ui, n);
+                            }
+                        });
+                } else {
+                    for n in 0..page_rows.len() {
+                        row(ui, n);
                     }
-                    None => body(ui),
                 }
             });
 
@@ -255,7 +334,14 @@ impl<'a> DataTable<'a> {
                 let p = ui.painter();
                 let font = FontId::proportional(14.0);
                 let text = match self.selection.as_deref() {
-                    Some(s) => format!("{} of {} row(s) selected.", s.iter().filter(|i| visible.contains(i)).count(), visible.len()),
+                    Some(s) => {
+                        let n = if state.filter.is_empty() {
+                            s.iter().filter(|&&i| i < rows.len()).count()
+                        } else {
+                            visible.iter().filter(|i| s.contains(i)).count()
+                        };
+                        format!("{} of {} row(s) selected.", n, visible.len())
+                    }
                     None => format!("Page {} of {}", state.page + 1, page_count),
                 };
                 let galley = p.layout_no_wrap(text, font, t.muted_foreground);
@@ -280,21 +366,57 @@ impl<'a> DataTable<'a> {
     }
 }
 
-fn text_anchor(cell: Rect, right: bool) -> (Pos2, Align2) {
-    if right {
-        (Pos2::new(cell.right() - 16.0, cell.center().y), Align2::RIGHT_CENTER)
+/// Row indices that match `filter` (any cell, case-insensitive), in sort order.
+fn filter_and_sort<S: AsRef<str>>(rows: &[Vec<S>], filter: &str, sort: Option<(usize, bool)>) -> Vec<usize> {
+    let needle = filter.to_lowercase();
+    let mut visible: Vec<usize> = (0..rows.len())
+        .filter(|&i| needle.is_empty() || rows[i].iter().any(|c| contains_lowercase(c.as_ref(), &needle)))
+        .collect();
+    if let Some((col, asc)) = sort {
+        // Parse every cell once instead of in each comparison.
+        let keys: Vec<SortKey> = rows.iter().map(|r| SortKey::new(r.get(col).map_or("", |c| c.as_ref()))).collect();
+        visible.sort_by(|&a, &b| {
+            let o = keys[a].cmp(&keys[b]);
+            if asc { o } else { o.reverse() }
+        });
+    }
+    visible
+}
+
+fn contains_lowercase(haystack: &str, needle_lower: &str) -> bool {
+    if haystack.is_ascii() && needle_lower.is_ascii() {
+        let n = needle_lower.as_bytes();
+        haystack.as_bytes().windows(n.len().max(1)).any(|w| w.eq_ignore_ascii_case(n))
     } else {
-        (Pos2::new(cell.left() + 16.0, cell.center().y), Align2::LEFT_CENTER)
+        haystack.to_lowercase().contains(needle_lower)
     }
 }
 
 /// Numbers compare by value (ignoring `$`, `,`, `%` and spaces), everything else
 /// case-insensitively.
-fn compare_cells(a: &str, b: &str) -> Ordering {
-    let num = |s: &str| s.chars().filter(|c| !matches!(c, '$' | '€' | '£' | ',' | '%' | ' ')).collect::<String>().parse::<f64>().ok();
-    match (num(a), num(b)) {
-        (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
-        _ => a.to_lowercase().cmp(&b.to_lowercase()),
+struct SortKey {
+    num: Option<f64>,
+    text: String,
+}
+
+impl SortKey {
+    fn new(s: &str) -> Self {
+        let num = s.chars().filter(|c| !matches!(c, '$' | '€' | '£' | ',' | '%' | ' ')).collect::<String>().parse::<f64>().ok();
+        Self { num, text: s.to_lowercase() }
+    }
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (self.num, other.num) {
+            (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
+            _ => self.text.cmp(&other.text),
+        }
+    }
+}
+
+fn text_anchor(cell: Rect, right: bool) -> (Pos2, Align2) {
+    if right {
+        (Pos2::new(cell.right() - 16.0, cell.center().y), Align2::RIGHT_CENTER)
+    } else {
+        (Pos2::new(cell.left() + 16.0, cell.center().y), Align2::LEFT_CENTER)
     }
 }
 
