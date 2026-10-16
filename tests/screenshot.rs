@@ -287,7 +287,7 @@ fn command_dialog() {
 #[test]
 fn combobox_search() {
     let mut h = git(false);
-    h.get_by_role(egui::accesskit::Role::ComboBox).click();
+    h.get_all_by_role(egui::accesskit::Role::ComboBox).next().unwrap().click(); // the branch picker, first in the top bar
     h.run_steps(4);
     h.get_by_role(egui::accesskit::Role::TextInput).type_text("feat");
     h.run_steps(4);
@@ -439,4 +439,64 @@ fn changes_filter() {
     h.get_by_label("Clear").click();
     h.run_steps(4);
     assert!(h.state().file_filter.is_empty());
+}
+
+/// History date filter: pick a start, then an end; the popover closes and the rows filter.
+#[test]
+fn date_range_filter() {
+    let mut h = git(false);
+    h.get_by_label("Filter by date").click();
+    h.run_steps(4);
+    h.get_by_label("October 6, 2026").click();
+    h.run_steps(4);
+    h.snapshot("calendar_range");
+    h.get_by_label("October 14, 2026").click();
+    h.run_steps(4);
+    let dates = h.state().dates;
+    assert_eq!(dates.start.map(|d| d.iso()), Some("2026-10-06".into()));
+    assert_eq!(dates.end.map(|d| d.iso()), Some("2026-10-14".into()));
+    assert!(h.query_by_label("October 10, 2026").is_none(), "popover closed");
+    assert!(h.query_by_label("5 commits").is_some()); // Oct 14, 12, 10, 8, 6
+    h.snapshot("history_filtered");
+}
+
+#[test]
+fn history_pagination() {
+    let mut h = git(false);
+    assert!(h.query_by_label("Initial commit").is_none(), "on page 2");
+    h.get_by_label("Next").click();
+    h.run_steps(4);
+    assert_eq!(h.state().page, 1);
+    assert!(h.query_by_label("Initial commit").is_some());
+    h.snapshot("pagination");
+    h.get_by_label("Page 1").click();
+    h.run_steps(4);
+    assert_eq!(h.state().page, 0);
+}
+
+/// A single-date picker on its own, opened on the selected month.
+#[test]
+fn date_picker() {
+    use shadcn_egui::{Date, DatePicker, Theme};
+    let mut date = Date::new(2026, 2, 27);
+    let mut h = Harness::builder().with_size(egui::vec2(320.0, 400.0)).build_ui_state(
+        |ui, date: &mut Option<Date>| {
+            Theme::dark().install(ui.ctx());
+            egui::Frame::new().fill(Theme::get(ui.ctx()).background).inner_margin(16).show(ui, |ui| {
+                ui.add(DatePicker::new("due", date).calendar(|c| c.today(Date::new(2026, 2, 10).unwrap()).monday_first()));
+            });
+        },
+        date.take(),
+    );
+    h.run_steps(2);
+    h.get_by_label("February 27, 2026").click();
+    h.run_steps(4);
+    h.get_by_label("Next month").click();
+    h.run_steps(2);
+    h.get_by_label("Previous month").click();
+    h.run_steps(4);
+    h.snapshot("date_picker");
+    h.get_by_label("March 1, 2026").click(); // shown in the last week of February
+    h.run_steps(4);
+    assert_eq!(*h.state(), Date::new(2026, 3, 1));
 }

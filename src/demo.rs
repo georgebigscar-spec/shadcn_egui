@@ -433,6 +433,14 @@ index 3b18e51..a9c2f04 100644\n\
     }
 }
 
+/// "Today" in the demo, so screenshots don't change with the date.
+const DEMO_TODAY: Date = Date { year: 2026, month: 10, day: 16 };
+
+/// Commit `i` (newest first) was made `i * 2` days before [`DEMO_TODAY`].
+fn commit_date(i: usize) -> Date {
+    DEMO_TODAY.add_days(-(i as i64) * 2)
+}
+
 /// What the sidebar selects.
 #[derive(Clone, Debug, PartialEq)]
 pub enum GitView {
@@ -459,6 +467,9 @@ pub struct GitDemo {
     pub split_diff: bool,
     pub details_open: bool,
     pub file_filter: String,
+    /// History filter and page.
+    pub dates: DateRange,
+    pub page: usize,
     fetching_until: f64,
     file: Option<&'static str>,
     commits: Vec<Vec<String>>,
@@ -486,6 +497,8 @@ impl Default for GitDemo {
             split_diff: false,
             details_open: false,
             file_filter: String::new(),
+            dates: DateRange::default(),
+            page: 0,
             fetching_until: 0.0,
             file: Some("src/overlay.rs"),
             commits,
@@ -588,7 +601,7 @@ impl GitDemo {
     fn commit_sheet(&mut self, ctx: &Context) {
         let (id, parents, subject, author) = HISTORY[self.commit];
         Sheet::new("git_commit_sheet", subject)
-            .description(format!("{author} committed {id}"))
+            .description(format!("{author} committed {id} on {}", commit_date(self.commit).long()))
             .show(ctx, &mut self.details_open, |ui| {
                 let t = Theme::get(ui.ctx());
                 ui.add_space(8.0);
@@ -678,10 +691,37 @@ impl GitDemo {
     }
 
     fn history(&mut self, ui: &mut Ui) {
+        const PAGE: usize = 6;
         let height = ui.available_height() - 24.0;
         egui::Frame::new().inner_margin(egui::Margin::same(12)).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let picker = DateRangePicker::new("git_dates", &mut self.dates)
+                    .placeholder("Filter by date")
+                    .width(250.0)
+                    .calendar(|c| c.today(DEMO_TODAY).max_date(DEMO_TODAY));
+                if ui.add(picker).changed() {
+                    self.page = 0;
+                }
+                if self.dates.start.is_some() && ui.add(Button::ghost("Reset").size(ButtonSize::Sm)).clicked() {
+                    self.dates = DateRange::default();
+                    self.page = 0;
+                }
+            });
+            ui.add_space(8.0);
+
+            // Rows in the date range; the graph only makes sense for the whole history.
+            let filtered = self.dates.is_complete();
+            let matching: Vec<usize> = (0..self.commits.len())
+                .filter(|&i| !filtered || self.dates.contains(commit_date(i)))
+                .collect();
+            let page_count = matching.len().div_ceil(PAGE).max(1);
+            self.page = self.page.min(page_count - 1);
+            let shown: Vec<usize> = matching.iter().copied().skip(self.page * PAGE).take(PAGE).collect();
+            let rows: Vec<Vec<String>> = shown.iter().map(|&i| self.commits[i].clone()).collect();
+
             let commits = &self.commits;
             let graph = &self.graph;
+            let shown_ref = &shown;
             let mut details = None;
             let show_details = &mut details;
             let r = DataTable::new(
@@ -694,51 +734,67 @@ impl GitDemo {
                 ],
             )
             .row_height(32.0)
-            .max_height(height - 40.0)
-            .cell_ui(|ui, row, col| match col {
-                0 => {
-                    graph.paint(ui, row);
-                    true
-                }
-                3 => {
-                    let t = Theme::get(ui.ctx());
-                    let hash = ui.label(RichText::new(&commits[row][3]).monospace().color(t.muted_foreground));
-                    hover_card(&hash, 300.0, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.add(Avatar::new(&commits[row][2][..1]).size(32.0));
-                            ui.vertical(|ui| {
-                                ui.label(RichText::new(&commits[row][2]).color(t.foreground));
-                                muted(ui, &commits[row][3]);
+            .max_height(height - 140.0)
+            .version(self.page as u64 * 1000 + matching.len() as u64)
+            .cell_ui(|ui, row, col| {
+                let i = shown_ref[row];
+                match col {
+                    0 => {
+                        if !filtered {
+                            graph.paint(ui, i);
+                        }
+                        true
+                    }
+                    3 => {
+                        let t = Theme::get(ui.ctx());
+                        let hash = ui.label(RichText::new(&commits[i][3]).monospace().color(t.muted_foreground));
+                        hover_card(&hash, 300.0, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.add(Avatar::new(&commits[i][2][..1]).size(32.0));
+                                ui.vertical(|ui| {
+                                    ui.label(RichText::new(&commits[i][2]).color(t.foreground));
+                                    muted(ui, format!("{} · {}", commits[i][3], commit_date(i).short()));
+                                });
                             });
+                            ui.label(RichText::new(&commits[i][1]).color(t.foreground));
                         });
-                        ui.label(RichText::new(&commits[row][1]).color(t.foreground));
-                    });
-                    true
+                        true
+                    }
+                    _ => false,
                 }
-                _ => false,
             })
             .row_context_menu(|ui, row| {
-                menu_label(ui, &commits[row][3]);
+                let i = shown_ref[row];
+                menu_label(ui, &commits[i][3]);
                 menu_separator(ui);
                 for action in ["Checkout", "Cherry-pick", "Revert"] {
                     if menu_item(ui, action, None).clicked() {
-                        toast(ui.ctx(), format!("{action} {}", commits[row][3]), None);
+                        toast(ui.ctx(), format!("{action} {}", commits[i][3]), None);
                     }
                 }
                 menu_separator(ui);
                 if menu_item(ui, "Show details", Some("⌘I")).clicked() {
-                    *show_details = Some(row);
+                    *show_details = Some(i);
                 }
                 menu_item(ui, "Copy hash", Some("⌘C"));
             })
-            .show(ui, commits);
+            .show(ui, &rows);
             if let Some(row) = r.clicked {
-                self.commit = row;
+                self.commit = shown[row];
             }
-            if let Some(row) = details {
-                self.commit = row;
+            if let Some(i) = details {
+                self.commit = i;
                 self.details_open = true;
             }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                muted(ui, format!("{} commits", matching.len()));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        pagination(ui, &mut self.page, page_count);
+                    });
+                });
+            });
         });
     }
 

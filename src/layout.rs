@@ -504,3 +504,90 @@ impl Collapsible {
         state.show_body_unindented(ui, add_body).map(|r| r.inner)
     }
 }
+
+// ---------------------------------------------------------------------------
+
+/// `<Pagination>`: `‹ Previous  1 … 4 5 6 … 20  Next ›` with `page` 0-based.
+/// The response is marked changed when the page changes.
+pub fn pagination(ui: &mut Ui, page: &mut usize, page_count: usize) -> Response {
+    let t = Theme::get(ui.ctx());
+    let count = page_count.max(1);
+    *page = (*page).min(count - 1);
+    let current = *page;
+    // Pages to show: first, last, and the current one with its neighbours.
+    let mut items: Vec<Option<usize>> = Vec::new();
+    for p in 0..count {
+        let show = p == 0 || p + 1 == count || p.abs_diff(current) <= 1 || (count <= 7);
+        if show {
+            items.push(Some(p));
+        } else if items.last() != Some(&None) {
+            items.push(None); // ellipsis
+        }
+    }
+    let mut new_page = current;
+    let font = FontId::proportional(14.0);
+    let mut inner = ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let nav = |ui: &mut Ui, label: &str, enabled: bool, prev: bool| {
+            let g = ui.painter().layout_no_wrap(label.to_owned(), font.clone(), Color32::PLACEHOLDER);
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(g.size().x + 40.0, 36.0), Sense::hover());
+            let r = ui.interact(rect, ui.id().with(("page_nav", label)), if enabled { Sense::click() } else { Sense::hover() });
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+            let p = ui.painter();
+            if enabled && r.hovered() {
+                p.rect_filled(rect, t.radius_md(), t.accent);
+            }
+            let fg = if enabled { t.foreground } else { t.muted_foreground.gamma_multiply(0.6) };
+            let (chev, text_x, angle) = if prev {
+                (rect.left() + 14.0, rect.left() + 26.0, std::f32::consts::FRAC_PI_2)
+            } else {
+                (rect.right() - 14.0, rect.left() + 14.0, -std::f32::consts::FRAC_PI_2)
+            };
+            paint_chevron(p, Pos2::new(chev, rect.center().y), angle, fg);
+            p.galley(Pos2::new(text_x, rect.center().y - g.size().y / 2.0), g, fg);
+            if r.has_focus() {
+                paint_focus_ring(p, rect, t.radius_md(), &t);
+            }
+            enabled && r.clicked()
+        };
+        if nav(ui, "Previous", current > 0, true) {
+            new_page = current - 1;
+        }
+        for item in &items {
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(36.0), Sense::hover());
+            match item {
+                Some(p) => {
+                    let label = (p + 1).to_string();
+                    let r = ui.interact(rect, ui.id().with(("page", *p)), Sense::click()).on_hover_cursor(CursorIcon::PointingHand);
+                    let active = *p == current;
+                    r.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, active, format!("Page {label}")));
+                    let painter = ui.painter();
+                    if active {
+                        painter.add(t.shadow_sm().as_shape(rect, t.radius_md()));
+                        painter.rect(rect, t.radius_md(), t.background, Stroke::new(1.0, t.input), StrokeKind::Inside);
+                    } else if r.hovered() {
+                        painter.rect_filled(rect, t.radius_md(), t.accent);
+                    }
+                    painter.text(rect.center(), Align2::CENTER_CENTER, label, font.clone(), t.foreground);
+                    if r.has_focus() {
+                        paint_focus_ring(painter, rect, t.radius_md(), &t);
+                    }
+                    if r.clicked() {
+                        new_page = *p;
+                    }
+                }
+                None => {
+                    ui.painter().text(rect.center(), Align2::CENTER_CENTER, "…", font.clone(), t.muted_foreground);
+                }
+            }
+        }
+        if nav(ui, "Next", current + 1 < count, false) {
+            new_page = current + 1;
+        }
+    });
+    if new_page != current {
+        *page = new_page;
+        inner.response.mark_changed();
+    }
+    inner.response
+}
