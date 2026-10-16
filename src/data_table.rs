@@ -52,7 +52,12 @@ struct State {
     sort: Option<(usize, bool)>, // (column, ascending)
     filter: String,
     page: usize,
+    /// Column widths set by dragging header borders (empty until the first drag).
+    widths: Vec<f32>,
 }
+
+/// Narrowest a column can be dragged.
+const MIN_RESIZED_WIDTH: f32 = 40.0;
 
 /// Draws one cell; see [`DataTable::cell_ui`].
 type CellUi<'a> = Box<dyn FnMut(&mut Ui, usize, usize) -> bool + 'a>;
@@ -86,6 +91,8 @@ pub struct DataTable<'a> {
     version: u64,
     cell_ui: Option<CellUi<'a>>,
     context_menu: Option<RowMenu<'a>>,
+    min_column_width: f32,
+    resizable: bool,
 }
 
 impl<'a> DataTable<'a> {
@@ -101,6 +108,8 @@ impl<'a> DataTable<'a> {
             version: 0,
             cell_ui: None,
             context_menu: None,
+            min_column_width: 0.0,
+            resizable: false,
         }
     }
     /// Adds a checkbox column; checked rows are stored in `selected`.
@@ -122,6 +131,21 @@ impl<'a> DataTable<'a> {
     /// Limits the height of the rows; taller content scrolls under a fixed header.
     pub fn max_height(mut self, height: f32) -> Self {
         self.max_height = Some(height);
+        self
+    }
+
+    /// Columns are at least this wide. When they don't fit, the table scrolls
+    /// horizontally: the header moves with the rows, while the filter, the
+    /// vertical scroll bar and the footer stay in view.
+    pub fn min_column_width(mut self, width: f32) -> Self {
+        self.min_column_width = width.max(0.0);
+        self
+    }
+
+    /// Lets the user drag the header borders to resize columns (and
+    /// double-click one to reset all widths). Widths are kept in egui memory.
+    pub fn resizable(mut self) -> Self {
+        self.resizable = true;
         self
     }
 
@@ -206,66 +230,23 @@ impl<'a> DataTable<'a> {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 let total = ui.available_width();
                 let sum: f32 = self.columns.iter().map(|c| c.weight).sum();
-                let widths: Vec<f32> = self.columns.iter().map(|c| c.weight / sum * (total - check_w)).collect();
+                let widths: Vec<f32> = if self.resizable && state.widths.len() == self.columns.len() {
+                    state.widths.clone()
+                } else {
+                    self.columns.iter().map(|c| (c.weight / sum * (total - check_w)).max(self.min_column_width)).collect()
+                };
+                // Wider than the frame: the body scrolls horizontally and the header follows it.
+                let content_w = (check_w + widths.iter().sum::<f32>()).max(total);
+                let scroll_x = content_w > total + 0.5;
 
-                // Header.
-                let (rect, _) = ui.allocate_exact_size(Vec2::new(total, 40.0), Sense::hover());
-                if let Some(selected) = self.selection.as_deref_mut() {
-                    let all = !page_rows.is_empty() && page_rows.iter().all(|i| selected.contains(i));
-                    let mut checked = all;
-                    let cb = Rect::from_center_size(Pos2::new(rect.left() + 20.0, rect.center().y), Vec2::splat(16.0));
-                    if ui.new_child(UiBuilder::new().max_rect(cb)).add(Checkbox::new(&mut checked)).changed() {
-                        for i in page_rows {
-                            if checked { selected.insert(*i) } else { selected.remove(i) };
-                        }
-                        response.selection_changed = true;
-                    }
-                }
-                let mut x = rect.left() + check_w;
-                for (c, (col, w)) in self.columns.iter().zip(&widths).enumerate() {
-                    let cell = Rect::from_min_size(Pos2::new(x, rect.top()), Vec2::new(*w, rect.height()));
-                    x += w;
-                    let sorted = state.sort.filter(|(sc, _)| *sc == c).map(|(_, asc)| asc);
-                    if col.sortable {
-                        let galley = ui.painter().layout_no_wrap(col.header.clone(), font.clone(), t.foreground);
-                        let bw = galley.size().x + 16.0 + 24.0;
-                        let bx = if col.right { cell.right() - bw - 8.0 } else { cell.left() + 8.0 };
-                        let button = Rect::from_min_size(Pos2::new(bx, cell.center().y - 16.0), Vec2::new(bw, 32.0));
-                        let r = ui
-                            .interact(button, self.id.with(("sort", c)), Sense::click())
-                            .on_hover_cursor(CursorIcon::PointingHand);
-                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &col.header));
-                        if r.clicked() {
-                            state.sort = match sorted {
-                                None => Some((c, true)),
-                                Some(true) => Some((c, false)),
-                                Some(false) => None,
-                            };
-                            state.page = 0;
-                        }
-                        let p = ui.painter();
-                        if r.hovered() {
-                            p.rect_filled(button, t.radius_md(), t.accent);
-                        }
-                        let fg = if r.hovered() || sorted.is_some() { t.foreground } else { t.muted_foreground };
-                        let text_pos = Pos2::new(button.left() + 8.0, button.center().y - galley.size().y / 2.0);
-                        let arrow_x = text_pos.x + galley.size().x + 12.0;
-                        p.galley(text_pos, galley, fg);
-                        paint_sort_icon(p, Pos2::new(arrow_x, button.center().y), sorted, fg);
-                        if r.has_focus() {
-                            paint_focus_ring(p, button, t.radius_md(), &t);
-                        }
-                    } else {
-                        let (pos, align) = text_anchor(cell, col.right);
-                        ui.painter().text(pos, align, &col.header, font.clone(), t.muted_foreground);
-                    }
-                }
-                ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, t.border));
+                // The header's place is reserved here; it is drawn after the body
+                // so it can use the body's horizontal scroll offset of this frame.
+                let (header, _) = ui.allocate_exact_size(Vec2::new(total, 40.0), Sense::hover());
 
                 // Body: one row of `page_rows`.
                 let mut row = |ui: &mut Ui, n: usize| {
                     let i = page_rows[n];
-                    let (rect, _) = ui.allocate_exact_size(Vec2::new(total, row_h), Sense::hover());
+                    let (rect, _) = ui.allocate_exact_size(Vec2::new(content_w, row_h), Sense::hover());
                     let r = ui.interact(rect, self.id.with(("row", i)), Sense::click());
                     r.widget_info(|| {
                         let text = rows[i].iter().map(|s| s.as_ref()).find(|s| !s.is_empty()).unwrap_or("");
@@ -296,6 +277,9 @@ impl<'a> DataTable<'a> {
                     for (c, (col, w)) in self.columns.iter().zip(&widths).enumerate() {
                         let cell = Rect::from_min_size(Pos2::new(x, rect.top()), Vec2::new(*w, rect.height()));
                         x += w;
+                        if !cell.intersects(clip) {
+                            continue;
+                        }
                         let drawn = self.cell_ui.as_mut().is_some_and(|f| {
                             let layout = if col.right {
                                 egui::Layout::right_to_left(egui::Align::Center)
@@ -323,13 +307,15 @@ impl<'a> DataTable<'a> {
                         ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, t.border));
                     }
                 };
+                let body_id = self.id.with("body");
+                let mut offset_x = 0.0;
                 if page_rows.is_empty() {
                     let (rect, _) = ui.allocate_exact_size(Vec2::new(total, 96.0), Sense::hover());
                     ui.painter().text(rect.center(), Align2::CENTER_CENTER, "No results.", font.clone(), t.muted_foreground);
                 } else if let Some(h) = self.max_height {
                     // Only the rows in view are laid out.
-                    egui::ScrollArea::vertical()
-                        .id_salt(self.id.with("body"))
+                    let out = egui::ScrollArea::new([scroll_x, true])
+                        .id_salt(body_id)
                         .max_height(h)
                         .auto_shrink([false, true])
                         .show_rows(ui, row_h, page_rows.len(), |ui, range| {
@@ -337,11 +323,96 @@ impl<'a> DataTable<'a> {
                                 row(ui, n);
                             }
                         });
+                    offset_x = out.state.offset.x;
+                } else if scroll_x {
+                    let out = egui::ScrollArea::horizontal().id_salt(body_id).auto_shrink([false, true]).show(ui, |ui| {
+                        for n in 0..page_rows.len() {
+                            row(ui, n);
+                        }
+                    });
+                    offset_x = out.state.offset.x;
                 } else {
                     for n in 0..page_rows.len() {
                         row(ui, n);
                     }
                 }
+
+                // Header, shifted by the body's horizontal offset and clipped to the frame.
+                let clip = header.intersect(ui.clip_rect());
+                let mut ui = ui.new_child(UiBuilder::new().max_rect(header));
+                ui.set_clip_rect(clip);
+                let left = header.left() - offset_x;
+                if let Some(selected) = self.selection.as_deref_mut() {
+                    let all = !page_rows.is_empty() && page_rows.iter().all(|i| selected.contains(i));
+                    let mut checked = all;
+                    let cb = Rect::from_center_size(Pos2::new(left + 20.0, header.center().y), Vec2::splat(16.0));
+                    if ui.new_child(UiBuilder::new().max_rect(cb)).add(Checkbox::new(&mut checked)).changed() {
+                        for i in page_rows {
+                            if checked { selected.insert(*i) } else { selected.remove(i) };
+                        }
+                        response.selection_changed = true;
+                    }
+                }
+                let mut resized: Option<Vec<f32>> = None;
+                let mut x = left + check_w;
+                for (c, (col, w)) in self.columns.iter().zip(&widths).enumerate() {
+                    let cell = Rect::from_min_size(Pos2::new(x, header.top()), Vec2::new(*w, header.height()));
+                    x += w;
+                    let sorted = state.sort.filter(|(sc, _)| *sc == c).map(|(_, asc)| asc);
+                    let p = ui.painter().with_clip_rect(cell.intersect(clip));
+                    if col.sortable {
+                        let galley = p.layout_no_wrap(col.header.clone(), font.clone(), t.foreground);
+                        let bw = galley.size().x + 16.0 + 24.0;
+                        let bx = if col.right { cell.right() - bw - 8.0 } else { cell.left() + 8.0 };
+                        let button = Rect::from_min_size(Pos2::new(bx, cell.center().y - 16.0), Vec2::new(bw, 32.0));
+                        let r = ui
+                            .interact(button.intersect(cell), self.id.with(("sort", c)), Sense::click())
+                            .on_hover_cursor(CursorIcon::PointingHand);
+                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &col.header));
+                        if r.clicked() {
+                            state.sort = match sorted {
+                                None => Some((c, true)),
+                                Some(true) => Some((c, false)),
+                                Some(false) => None,
+                            };
+                            state.page = 0;
+                        }
+                        if r.hovered() {
+                            p.rect_filled(button, t.radius_md(), t.accent);
+                        }
+                        let fg = if r.hovered() || sorted.is_some() { t.foreground } else { t.muted_foreground };
+                        let text_pos = Pos2::new(button.left() + 8.0, button.center().y - galley.size().y / 2.0);
+                        let arrow_x = text_pos.x + galley.size().x + 12.0;
+                        p.galley(text_pos, galley, fg);
+                        paint_sort_icon(&p, Pos2::new(arrow_x, button.center().y), sorted, fg);
+                        if r.has_focus() {
+                            paint_focus_ring(&p, button, t.radius_md(), &t);
+                        }
+                    } else {
+                        let (pos, align) = text_anchor(cell, col.right);
+                        p.text(pos, align, &col.header, font.clone(), t.muted_foreground);
+                    }
+                    if self.resizable {
+                        let edge = Rect::from_center_size(Pos2::new(cell.right(), cell.center().y), Vec2::new(8.0, cell.height()));
+                        let r = ui
+                            .interact(edge, self.id.with(("resize", c)), Sense::click_and_drag())
+                            .on_hover_and_drag_cursor(CursorIcon::ResizeColumn);
+                        if r.dragged() && r.drag_delta().x != 0.0 {
+                            let w = resized.get_or_insert_with(|| widths.clone());
+                            w[c] = (w[c] + r.drag_delta().x).max(MIN_RESIZED_WIDTH);
+                        }
+                        if r.double_clicked() {
+                            state.widths.clear();
+                        }
+                        if r.hovered() || r.dragged() {
+                            ui.painter().vline(cell.right(), cell.y_range(), Stroke::new(2.0, t.ring));
+                        }
+                    }
+                }
+                if let Some(w) = resized {
+                    state.widths = w;
+                }
+                ui.painter().hline(header.x_range(), header.bottom() - 0.5, Stroke::new(1.0, t.border));
             });
 
         // Footer: selection count and pagination.
