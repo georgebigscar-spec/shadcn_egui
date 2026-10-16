@@ -45,6 +45,9 @@ pub struct DataTableResponse {
     pub clicked: Option<usize>,
     /// True if the selection changed.
     pub selection_changed: bool,
+    /// Indices (into `rows`) of the rows that pass the filter, in the order
+    /// they are shown after sorting, across all pages.
+    pub visible: Arc<Vec<usize>>,
 }
 
 #[derive(Clone, Default)]
@@ -189,7 +192,7 @@ impl<'a> DataTable<'a> {
     pub fn show<S: AsRef<str>>(mut self, ui: &mut Ui, rows: &[Vec<S>]) -> DataTableResponse {
         let t = Theme::get(ui.ctx());
         let mut state: State = ui.data(|d| d.get_temp(self.id)).unwrap_or_default();
-        let mut response = DataTableResponse { clicked: None, selection_changed: false };
+        let mut response = DataTableResponse { clicked: None, selection_changed: false, visible: Arc::default() };
         let saved_spacing = ui.spacing().item_spacing.y;
 
         if let Some(hint) = &self.filter_hint {
@@ -212,6 +215,7 @@ impl<'a> DataTable<'a> {
                 visible
             }
         };
+        response.visible = visible.clone();
         let page_count = self.page_size.map_or(1, |n| visible.len().div_ceil(n).max(1));
         state.page = state.page.min(page_count - 1);
         let page_rows: &[usize] = match self.page_size {
