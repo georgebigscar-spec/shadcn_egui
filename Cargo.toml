@@ -1,6 +1,6 @@
 [package]
 name = "shadcn_egui"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "shadcn/ui-style components for egui"
 license = "MIT"
