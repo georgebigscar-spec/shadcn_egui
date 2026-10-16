@@ -99,6 +99,53 @@ fn data_table_scroll() {
 }
 
 #[test]
+fn data_table_wide() {
+    let rows: Vec<Vec<String>> = (1..=20).map(|r| (1..=6).map(|c| format!("row {r} col {c}")).collect()).collect();
+    let mut h = Harness::builder().with_size(egui::vec2(420.0, 360.0)).build_ui(move |ui| {
+        shadcn_egui::Theme::light().install(ui.ctx());
+        egui::Frame::new().fill(egui::Color32::WHITE).inner_margin(16).show(ui, |ui| {
+            let columns = (1..=6).map(|c| shadcn_egui::Column::new(format!("Column {c}")).sortable()).collect();
+            shadcn_egui::DataTable::new("wide", columns)
+                .filter("Filter...")
+                .min_column_width(140.0)
+                .resizable()
+                .max_height(200.0)
+                .row_height(30.0)
+                .show(ui, &rows);
+        });
+    });
+    h.run_steps(2);
+    // Scroll right: the header moves with the rows.
+    h.event(egui::Event::PointerMoved(egui::pos2(200.0, 200.0)));
+    h.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(-300.0, 0.0),
+        modifiers: egui::Modifiers::NONE,
+        phase: egui::TouchPhase::Move,
+    });
+    h.run_steps(30);
+    let header = h.get_by_label("Column 3").rect();
+    let row = h.get_by_label("row 1 col 1").rect();
+    assert!(row.left() < -200.0, "{row:?}");
+    assert!((header.left() - (row.left() + 2.0 * 140.0 + 8.0)).abs() < 1.0, "{header:?} {row:?}");
+
+    // Widen column 3 by dragging its right border.
+    let col4 = h.get_by_label("Column 4").rect().left();
+    let from = egui::pos2(col4 - 8.0, header.center().y);
+    h.hover_at(from);
+    h.run_steps(1);
+    h.drag_at(from);
+    h.run_steps(1);
+    h.hover_at(from + egui::vec2(60.0, 0.0));
+    h.run_steps(1);
+    h.drop_at(from + egui::vec2(60.0, 0.0));
+    h.run_steps(4);
+    let moved = h.get_by_label("Column 4").rect().left() - col4;
+    assert!((moved - 60.0).abs() < 2.0, "{moved}");
+    h.snapshot("data_table_wide");
+}
+
+#[test]
 fn tree_scroll() {
     let mut selected = None;
     let mut h = Harness::builder().with_size(egui::vec2(320.0, 300.0)).build_ui(move |ui| {
