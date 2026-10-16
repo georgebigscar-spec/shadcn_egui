@@ -1,4 +1,4 @@
-//! Small display components: Badge, Label, Separator, Kbd, Skeleton, Progress, Avatar.
+//! Small display components: Badge, Label, Separator, Kbd, Skeleton, Progress, Spinner, Empty, Avatar.
 
 use egui::{
     Color32, CornerRadius, FontId, Rect, Response, RichText, Sense, Stroke, StrokeKind, Ui, Vec2,
@@ -194,6 +194,123 @@ impl Widget for Progress {
             ui.painter().rect_filled(fill, radius, t.primary);
         }
         response
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+/// `<Spinner>`: a rotating arc, for work in progress such as a fetch or push.
+#[must_use = "add it with `ui.add(...)`"]
+pub struct Spinner {
+    size: f32,
+    color: Option<Color32>,
+}
+
+impl Spinner {
+    pub fn new() -> Self {
+        Self { size: 16.0, color: None }
+    }
+    pub fn size(mut self, size: f32) -> Self {
+        self.size = size;
+        self
+    }
+    pub fn color(mut self, color: Color32) -> Self {
+        self.color = Some(color);
+        self
+    }
+}
+
+impl Default for Spinner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Widget for Spinner {
+    fn ui(self, ui: &mut Ui) -> Response {
+        let t = Theme::get(ui.ctx());
+        let (rect, response) = ui.allocate_exact_size(Vec2::splat(self.size), Sense::hover());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ProgressIndicator, true, "Loading"));
+        let color = self.color.unwrap_or(t.muted_foreground);
+        let radius = self.size / 2.0 - 1.5;
+        let start = ui.input(|i| i.time) as f32 * std::f32::consts::TAU * 1.2;
+        let points: Vec<egui::Pos2> = (0..=24)
+            .map(|k| {
+                let a = start + k as f32 / 24.0 * std::f32::consts::TAU * 0.75;
+                rect.center() + radius * Vec2::angled(a)
+            })
+            .collect();
+        ui.painter().line(points, Stroke::new(1.75, color));
+        ui.ctx().request_repaint();
+        response
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+/// `<Empty>`: a centered placeholder for an empty list or view, with an
+/// optional icon, description and actions.
+///
+/// ```ignore
+/// Empty::new("No changes")
+///     .icon("✓")
+///     .description("Your working tree is clean.")
+///     .show(ui, |ui| { ui.add(Button::outline("Fetch")); });
+/// ```
+pub struct Empty {
+    title: String,
+    description: Option<String>,
+    icon: Option<String>,
+}
+
+impl Empty {
+    pub fn new(title: impl Into<String>) -> Self {
+        Self { title: title.into(), description: None, icon: None }
+    }
+    pub fn description(mut self, text: impl Into<String>) -> Self {
+        self.description = Some(text.into());
+        self
+    }
+    /// A short glyph shown in a muted square above the title.
+    pub fn icon(mut self, icon: impl Into<String>) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
+
+    /// Fills the available width; `add_actions` draws buttons below the text.
+    pub fn show<R>(self, ui: &mut Ui, add_actions: impl FnOnce(&mut Ui) -> R) -> egui::InnerResponse<R> {
+        let t = Theme::get(ui.ctx());
+        ui.vertical_centered(|ui| {
+            ui.add_space(24.0);
+            if let Some(icon) = &self.icon {
+                let (rect, _) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::hover());
+                ui.painter().rect_filled(rect, t.radius_lg(), t.muted);
+                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, icon, FontId::proportional(18.0), t.foreground);
+                ui.add_space(8.0);
+            }
+            ui.label(RichText::new(&self.title).size(16.0).color(t.foreground));
+            if let Some(d) = &self.description {
+                ui.add_space(-4.0);
+                ui.label(RichText::new(d).size(14.0).color(t.muted_foreground));
+            }
+            ui.add_space(8.0);
+            let r = ui.horizontal_top(|ui| {
+                // Centre the actions: lay them out once to measure, then offset.
+                let id = ui.id().with("empty_actions_w");
+                let w: f32 = ui.data(|d| d.get_temp(id)).unwrap_or(0.0);
+                ui.add_space(((ui.available_width() - w) / 2.0).max(0.0));
+                let start = ui.cursor().left();
+                let r = add_actions(ui);
+                let width = ui.min_rect().right() - start;
+                if (width - w).abs() > 0.5 {
+                    ui.data_mut(|d| d.insert_temp(id, width));
+                    ui.ctx().request_discard("Empty: measured actions");
+                }
+                r
+            });
+            ui.add_space(24.0);
+            r.inner
+        })
     }
 }
 

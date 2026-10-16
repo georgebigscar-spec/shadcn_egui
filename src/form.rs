@@ -489,6 +489,7 @@ pub fn toggle_group(ui: &mut Ui, selected: &mut usize, items: &[&str]) -> Respon
         x += w;
         let id = response.id.with(i);
         let item_resp = ui.interact(item, id, Sense::click());
+        item_resp.widget_info(|| WidgetInfo::selected(WidgetType::Button, ui.is_enabled(), *selected == i, *label));
         if item_resp.clicked() && *selected != i {
             *selected = i;
             response.mark_changed();

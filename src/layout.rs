@@ -1,4 +1,4 @@
-//! Structural components: Card, Alert, Tabs, Accordion, Table.
+//! Structural components: Card, Alert, Tabs, TabBar, Accordion, Table.
 
 use egui::{
     collapsing_header::CollapsingState, Align2, Color32, CursorIcon, FontId, Frame, Id,
@@ -149,6 +149,7 @@ pub fn tabs(ui: &mut Ui, selected: &mut usize, labels: &[&str]) -> Response {
         let r = ui
             .interact(item, response.id.with(i), Sense::click())
             .on_hover_cursor(CursorIcon::PointingHand);
+        r.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), *selected == i, *label));
         if r.clicked() && *selected != i {
             *selected = i;
             response.mark_changed();
@@ -168,6 +169,124 @@ pub fn tabs(ui: &mut Ui, selected: &mut usize, labels: &[&str]) -> Response {
         }
     }
     response
+}
+
+// ---------------------------------------------------------------------------
+
+/// Editor-style tabs with close buttons, like open files in an IDE. Not part of
+/// shadcn/ui; styled like its `line` tabs: an underline marks the active tab.
+///
+/// ```ignore
+/// let r = TabBar::new("files").show(ui, &mut self.open_files, &mut self.active, |f| f.name.clone());
+/// if let Some(file) = r.closed { /* save it, etc. */ }
+/// show_file(ui, &self.open_files[self.active]);
+/// ```
+pub struct TabBar {
+    id: Id,
+}
+
+/// What happened in a [`TabBar`] this frame.
+pub struct TabBarResponse<T> {
+    /// The tab that was closed (✕, middle click, or Ctrl+W on the active tab);
+    /// it has already been removed from the list.
+    pub closed: Option<T>,
+    /// The active tab changed (click or close).
+    pub changed: bool,
+}
+
+impl TabBar {
+    pub fn new(id_salt: impl egui::AsId) -> Self {
+        Self { id: Id::new(id_salt) }
+    }
+
+    /// Draws one tab per item of `tabs`, labelled by `label`. `active` is kept
+    /// in range when tabs are closed.
+    pub fn show<T>(
+        self,
+        ui: &mut Ui,
+        tabs: &mut Vec<T>,
+        active: &mut usize,
+        label: impl Fn(&T) -> String,
+    ) -> TabBarResponse<T> {
+        let t = Theme::get(ui.ctx());
+        let font = FontId::proportional(14.0);
+        let mut close = None;
+        let mut changed = false;
+        // Scroll the active tab into view when it or the number of tabs changes.
+        let seen_id = self.id.with("seen");
+        let seen = (*active, tabs.len());
+        let reveal = ui.data(|d| d.get_temp::<(usize, usize)>(seen_id)) != Some(seen);
+        ui.data_mut(|d| d.insert_temp(seen_id, seen));
+        let width = ui.available_width();
+        let (bar, _) = ui.allocate_exact_size(Vec2::new(width, 36.0), Sense::hover());
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(bar).id_salt(self.id));
+        egui::ScrollArea::horizontal()
+            .id_salt(self.id.with("scroll"))
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+            .show(&mut child, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    for (i, tab) in tabs.iter().enumerate() {
+                        let text = label(tab);
+                        let galley = ui.painter().layout_no_wrap(text.clone(), font.clone(), Color32::PLACEHOLDER);
+                        let size = Vec2::new(galley.size().x + 12.0 + 28.0, 36.0);
+                        let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+                        let r = ui
+                            .interact(rect, self.id.with(("tab", i)), Sense::click())
+                            .on_hover_cursor(CursorIcon::PointingHand);
+                        r.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, *active == i, &text));
+                        let x_rect = Rect::from_center_size(Pos2::new(rect.right() - 16.0, rect.center().y), Vec2::splat(18.0));
+                        let x = ui.interact(x_rect, self.id.with(("close", i)), Sense::click());
+                        x.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Close {text}")));
+                        if x.clicked() || r.middle_clicked() {
+                            close = Some(i);
+                        } else if r.clicked() && *active != i {
+                            *active = i;
+                            changed = true;
+                        }
+                        let is_active = *active == i;
+                        let p = ui.painter();
+                        if r.hovered() && !is_active {
+                            p.rect_filled(rect.shrink2(Vec2::new(0.0, 4.0)), t.radius_sm(), t.accent);
+                        }
+                        let fg = if is_active || r.hovered() { t.foreground } else { t.muted_foreground };
+                        p.galley(Pos2::new(rect.left() + 12.0, rect.center().y - galley.size().y / 2.0), galley, fg);
+                        if is_active || r.hovered() || x.hovered() {
+                            if x.hovered() {
+                                p.rect_filled(x_rect, t.radius_sm(), t.muted);
+                            }
+                            let c = x_rect.center();
+                            let s = 3.5;
+                            let stroke = Stroke::new(1.25, if x.hovered() { t.foreground } else { t.muted_foreground });
+                            p.line_segment([c + Vec2::new(-s, -s), c + Vec2::new(s, s)], stroke);
+                            p.line_segment([c + Vec2::new(-s, s), c + Vec2::new(s, -s)], stroke);
+                        }
+                        if is_active {
+                            p.hline(rect.x_range(), rect.bottom() - 1.0, Stroke::new(2.0, t.foreground));
+                            if reveal {
+                                r.scroll_to_me(None);
+                            }
+                        }
+                        if r.has_focus() {
+                            paint_focus_ring(p, rect.shrink(2.0), t.radius_sm(), &t);
+                        }
+                    }
+                });
+            });
+        ui.painter().hline(bar.x_range(), bar.bottom() - 0.5, Stroke::new(1.0, t.border));
+        if close.is_none() && !tabs.is_empty() && ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::W)) {
+            close = Some(*active);
+        }
+        let closed = close.filter(|&i| i < tabs.len()).map(|i| {
+            if i < *active || (i == *active && *active + 1 == tabs.len() && *active > 0) {
+                *active -= 1;
+            }
+            changed = true;
+            tabs.remove(i)
+        });
+        *active = (*active).min(tabs.len().saturating_sub(1));
+        TabBarResponse { closed, changed }
+    }
 }
 
 // ---------------------------------------------------------------------------

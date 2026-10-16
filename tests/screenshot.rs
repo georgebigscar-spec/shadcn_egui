@@ -287,12 +287,12 @@ fn command_dialog() {
 #[test]
 fn combobox_search() {
     let mut h = git(false);
-    h.get_by_label("main").click();
+    h.get_by_role(egui::accesskit::Role::ComboBox).click();
     h.run_steps(4);
     h.get_by_role(egui::accesskit::Role::TextInput).type_text("feat");
     h.run_steps(4);
     h.snapshot("combobox");
-    h.get_by_label("feature/command-palette").click();
+    h.key_press(egui::Key::Enter); // the first match is highlighted
     h.run_steps(4);
     assert_eq!(h.state().branch, Some(2));
     assert!(h.query_by_role(egui::accesskit::Role::TextInput).is_none(), "popup closed");
@@ -323,4 +323,56 @@ fn resizable_drag() {
     assert!((sizes[0] * 1068.0 - (x - 16.0) - 120.0).abs() < 4.0, "{sizes:?}");
     assert!((sizes.iter().sum::<f32>() - 1.0).abs() < 1e-4);
     h.snapshot("resizable");
+}
+
+/// Side-by-side diff of a modified file.
+#[test]
+fn diff_split() {
+    let mut h = git(true);
+    h.get_by_label("Split").click();
+    h.run_steps(4);
+    assert!(h.state().split_diff);
+    h.snapshot("diff_split");
+}
+
+/// Closing every tab leaves the Empty placeholder; its button reopens them.
+#[test]
+fn tabs_close_to_empty() {
+    let mut h = git(false);
+    h.get_by_label("Close overlay.rs").click();
+    h.run_steps(2);
+    assert_eq!(h.state().open_files, ["src/command.rs", "README.md"]);
+    assert_eq!(h.state().active_file, 1, "the tab to the right becomes active");
+    h.get_by_label("Close command.rs").click();
+    h.run_steps(2);
+    h.get_by_label("Close README.md").click();
+    h.run_steps(4);
+    assert!(h.state().open_files.is_empty());
+    h.snapshot("empty");
+    h.get_by_label("Open all changes").click();
+    h.run_steps(2);
+    assert_eq!(h.state().open_files.len(), 4);
+}
+
+/// Sidebar navigation: switch to Changes, collapse a group, open a file from the tree.
+#[test]
+fn sidebar_changes() {
+    let mut h = git(false);
+    h.get_by_label("Changes").click();
+    h.run_steps(2);
+    assert_eq!(h.state().view, shadcn_egui::demo::GitView::Changes);
+    h.get_by_label("Remotes").click();
+    h.run_steps(8);
+    h.get_by_label("graph.rs").click();
+    h.run_steps(4);
+    assert_eq!(h.state().open_files.last(), Some(&"src/graph.rs"));
+    h.snapshot("sidebar_changes");
+}
+
+#[test]
+fn fetch_shows_spinner() {
+    let mut h = git(false);
+    h.get_by_label("Fetch").click();
+    h.run_steps(2);
+    assert!(h.query_by_label("Loading").is_some());
 }

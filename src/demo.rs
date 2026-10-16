@@ -367,51 +367,126 @@ const BRANCHES: [&str; 6] = [
 ];
 
 const CHANGES: [(&str, &str); 4] =
-    [("src/command.rs", "A"), ("src/resizable.rs", "A"), ("src/overlay.rs", "M"), ("README.md", "M")];
+    [("src/command.rs", "A"), ("src/graph.rs", "A"), ("src/overlay.rs", "M"), ("README.md", "M")];
 
-/// A small git client layout that uses Resizable, Combobox, Command and
-/// ContextMenu together. Used by the `git_client` example and the screenshot test.
+/// (id, parents, subject, author), newest first.
+const HISTORY: [(&str, &[&str], &str, &str); 10] = [
+    ("4f1c2a9", &["9b0e7d1", "c3d8e45"], "Merge branch 'feature/git-widgets'", "George"),
+    ("c3d8e45", &["5a7f210"], "Commit graph and diff view", "Ada"),
+    ("9b0e7d1", &["e26b4c3"], "Add Command palette and Combobox", "George"),
+    ("5a7f210", &["7d91f08"], "Sidebar, Spinner and Empty", "Ada"),
+    ("e26b4c3", &["7d91f08"], "Resizable panel groups", "Linus"),
+    ("7d91f08", &["1e4a6b2"], "Context menu on tree and table rows", "George"),
+    ("1e4a6b2", &["b8c0d37"], "DataTable: custom cells and cached filter/sort", "Ada"),
+    ("b8c0d37", &["0f3e9a1"], "Tree: row content and multi-select", "Linus"),
+    ("0f3e9a1", &["6c2d5e8"], "Fix scrolling in Tree with max_height", "George"),
+    ("6c2d5e8", &[], "Initial commit", "Ada"),
+];
+
+fn diff_for(path: &str) -> String {
+    match path {
+        "README.md" => "diff --git a/README.md b/README.md\n\
+index 3b18e51..a9c2f04 100644\n\
+--- a/README.md\n\
++++ b/README.md\n\
+@@ -12,7 +12,8 @@ shadcn/ui-style components for egui\n \n ```sh\n cargo run --example gallery\n-cargo run --example git_client\n+cargo run --example git_client  # sidebar, graph, diff, tabs\n+UPDATE_SNAPSHOTS=1 cargo test\n ```\n \n ## Usage\n"
+            .to_owned(),
+        "src/overlay.rs" => "diff --git a/src/overlay.rs b/src/overlay.rs\n\
+--- a/src/overlay.rs\n\
++++ b/src/overlay.rs\n\
+@@ -40,9 +40,7 @@ impl Widget for Select<'_> {\n         response = response.on_hover_cursor(CursorIcon::PointingHand);\n \n-        let p = ui.painter();\n-        let fill = if t.dark { t.input.gamma_multiply(0.3) } else { Color32::TRANSPARENT };\n-        p.add(t.shadow_sm().as_shape(rect, t.radius_md()));\n+        match current {\n+            Some(s) => paint_select_trigger(ui, rect, s, t.foreground, &t),\n+            None => paint_select_trigger(ui, rect, &self.placeholder, t.muted_foreground, &t),\n+        }\n \n         let mut changed = false;\n"
+            .to_owned(),
+        _ => {
+            let mut d = format!("diff --git a/{path} b/{path}\nnew file mode 100644\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,24 @@\n");
+            for line in [
+                "//! A new module.",
+                "",
+                "use egui::{Color32, Pos2, Stroke, Ui};",
+                "",
+                "use crate::theme::Theme;",
+                "",
+                "pub struct Example {",
+                "    lanes: usize,",
+                "    pub lane_width: f32,",
+                "}",
+                "",
+                "impl Example {",
+                "    pub fn new() -> Self {",
+                "        Self { lanes: 0, lane_width: 14.0 }",
+                "    }",
+                "",
+                "    pub fn paint(&self, ui: &Ui) {",
+                "        let t = Theme::get(ui.ctx());",
+                "        let p = ui.painter();",
+                "        p.circle_filled(Pos2::ZERO, 4.0, t.foreground);",
+                "        p.line_segment([Pos2::ZERO, Pos2::new(0.0, 8.0)], Stroke::new(2.0, Color32::RED));",
+                "    }",
+                "}",
+                "",
+            ] {
+                d.push('+');
+                d.push_str(line);
+                d.push('\n');
+            }
+            d
+        }
+    }
+}
+
+/// What the sidebar selects.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GitView {
+    Changes,
+    History,
+    Branch(usize),
+    Remote(&'static str),
+}
+
+/// A small git client: Sidebar, Resizable panels, Combobox, Command palette,
+/// context menus, a commit graph, editor tabs and a diff view. Used by the
+/// `git_client` example and the screenshot tests.
 pub struct GitDemo {
     pub dark: bool,
-    /// Widths of the changes | history | details panels.
+    /// Widths of the sidebar | list | diff panels.
     pub sizes: [f32; 3],
     pub palette_open: bool,
     pub branch: Option<usize>,
+    pub view: GitView,
     pub commit: usize,
+    /// Files open in the diff tabs, and the active one.
+    pub open_files: Vec<&'static str>,
+    pub active_file: usize,
+    pub split_diff: bool,
+    fetching_until: f64,
     file: Option<&'static str>,
     commits: Vec<Vec<String>>,
+    graph: CommitGraph,
+    diffs: std::collections::HashMap<&'static str, String>,
 }
 
 impl Default for GitDemo {
     fn default() -> Self {
-        let subjects = [
-            "Add Command palette and Combobox",
-            "Resizable panel groups",
-            "Context menu on tree and table rows",
-            "DataTable: custom cells and cached filter/sort",
-            "Tree: row content and multi-select",
-            "Fix scrolling in Tree with max_height",
-            "Initial commit",
-        ];
-        let commits = subjects
+        let commits = HISTORY
             .iter()
-            .enumerate()
-            .map(|(i, s)| {
-                vec![
-                    s.to_string(),
-                    ["George", "Ada", "Linus"][i % 3].to_string(),
-                    format!("{:07x}", (i + 1) * 2_654_435_761usize % 0xfff_ffff),
-                ]
-            })
+            .map(|(id, _, subject, author)| vec![String::new(), subject.to_string(), author.to_string(), id.to_string()])
             .collect();
+        let graph = CommitGraph::new(HISTORY.iter().map(|(id, parents, _, _)| (*id, *parents)));
+        let diffs = CHANGES.iter().map(|(p, _)| (*p, diff_for(p))).collect();
         Self {
             dark: false,
-            sizes: [0.24, 0.46, 0.30],
+            sizes: [0.2, 0.42, 0.38],
             palette_open: false,
             branch: Some(0),
+            view: GitView::History,
             commit: 0,
-            file: Some("src/command.rs"),
+            open_files: vec!["src/command.rs", "src/overlay.rs", "README.md"],
+            active_file: 1,
+            split_diff: false,
+            fetching_until: 0.0,
+            file: Some("src/overlay.rs"),
             commits,
+            graph,
+            diffs,
         }
     }
 }
@@ -428,6 +503,7 @@ impl GitDemo {
             self.palette_open = !self.palette_open;
         }
         let t = Theme::get(ctx);
+        let now = ctx.input(|i| i.time);
 
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(t.background).inner_margin(16))
@@ -441,8 +517,12 @@ impl GitDemo {
                         .width(240.0));
                     for action in ["Fetch", "Pull", "Push"] {
                         if ui.add(Button::outline(action).size(ButtonSize::Sm)).clicked() {
-                            toast(ui.ctx(), format!("{action} finished"), None);
+                            self.fetching_until = now + 1.5;
                         }
+                    }
+                    if now < self.fetching_until {
+                        ui.add(Spinner::new());
+                        muted(ui, "Fetching origin…");
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.add(Button::outline("Search commands…  ⌘K").size(ButtonSize::Sm)).clicked() {
@@ -460,7 +540,8 @@ impl GitDemo {
                             .min_size(180.0)
                             .with_handle()
                             .show(ui, |ui, panel| match panel {
-                                0 => self.changes(ui),
+                                0 => self.sidebar(ui),
+                                1 if self.view == GitView::Changes => self.changes(ui),
                                 1 => self.history(ui),
                                 _ => self.details(ui),
                             });
@@ -472,6 +553,27 @@ impl GitDemo {
         Toaster::show(ctx);
     }
 
+    fn sidebar(&mut self, ui: &mut Ui) {
+        let t = Theme::get(ui.ctx());
+        ui.painter().rect_filled(ui.max_rect(), egui::CornerRadius { nw: t.radius_lg().nw, sw: t.radius_lg().sw, ..Default::default() }, Sidebar::fill(&t));
+        egui::Frame::new().inner_margin(egui::Margin::same(8)).show(ui, |ui| {
+            Sidebar::new("git_nav").show(ui, &mut self.view, |sb| {
+                sb.item(GitView::Changes, "Changes", Some(&CHANGES.len().to_string()));
+                sb.item(GitView::History, "History", None);
+                sb.group("Branches", |sb| {
+                    for (i, b) in BRANCHES.iter().enumerate().take(4) {
+                        let badge = (i == 2).then_some("+2");
+                        sb.item(GitView::Branch(i), b, badge);
+                    }
+                });
+                sb.group("Remotes", |sb| {
+                    sb.item(GitView::Remote("origin"), "origin", None);
+                    sb.item(GitView::Remote("upstream"), "upstream", None);
+                });
+            });
+        });
+    }
+
     fn changes(&mut self, ui: &mut Ui) {
         let t = Theme::get(ui.ctx());
         ui.add_space(12.0);
@@ -480,6 +582,7 @@ impl GitDemo {
             ui.label(RichText::new("Changes").strong());
         });
         ui.add_space(4.0);
+        let before = self.file;
         egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 0)).show(ui, |ui| {
             Tree::new("git_changes").default_open_depth(2).show(ui, &mut self.file, |tree| {
                 tree.folder("src", "src", |tree| {
@@ -497,24 +600,56 @@ impl GitDemo {
                 file_menu(&row, "README.md");
             });
         });
+        if self.file != before {
+            if let Some(f) = self.file {
+                self.open(f);
+            }
+        }
+    }
+
+    fn open(&mut self, file: &'static str) {
+        match self.open_files.iter().position(|f| *f == file) {
+            Some(i) => self.active_file = i,
+            None => {
+                self.open_files.push(file);
+                self.active_file = self.open_files.len() - 1;
+            }
+        }
     }
 
     fn history(&mut self, ui: &mut Ui) {
-        let height = ui.available_height() - 40.0;
+        let height = ui.available_height() - 24.0;
         egui::Frame::new().inner_margin(egui::Margin::same(12)).show(ui, |ui| {
             let commits = &self.commits;
+            let graph = &self.graph;
             let r = DataTable::new(
                 "git_history",
-                vec![Column::new("Subject").weight(3.0), Column::new("Author"), Column::new("Hash").right()],
+                vec![
+                    Column::new("").weight(0.55),
+                    Column::new("Subject").weight(3.0),
+                    Column::new("Author"),
+                    Column::new("Hash").right(),
+                ],
             )
             .row_height(32.0)
             .max_height(height - 40.0)
+            .cell_ui(|ui, row, col| match col {
+                0 => {
+                    graph.paint(ui, row);
+                    true
+                }
+                3 => {
+                    ui.label(RichText::new(&commits[row][3]).monospace().color(Theme::get(ui.ctx()).muted_foreground));
+                    true
+                }
+                _ => false,
+            })
             .row_context_menu(|ui, row| {
-                menu_label(ui, &commits[row][2]);
+                menu_label(ui, &commits[row][3]);
                 menu_separator(ui);
                 for action in ["Checkout", "Cherry-pick", "Revert"] {
                     if menu_item(ui, action, None).clicked() {
-                        toast(ui.ctx(), format!("{action} {}", commits[row][2]), None);
+                        toast(ui.ctx(), format!("{action} {}", commits[row][3]), None);
                     }
                 }
                 menu_separator(ui);
@@ -528,32 +663,44 @@ impl GitDemo {
     }
 
     fn details(&mut self, ui: &mut Ui) {
-        let t = Theme::get(ui.ctx());
-        let c = &self.commits[self.commit];
-        egui::Frame::new().inner_margin(egui::Margin::same(16)).show(ui, |ui| {
-            ui.label(RichText::new(&c[0]).size(16.0).color(t.foreground));
-            muted(ui, format!("{} · {}", c[1], c[2]));
-            ui.add_space(8.0);
-            separator(ui);
-            ui.add_space(4.0);
-            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-            let green = egui::Color32::from_rgb(22, 163, 74);
-            for (sign, line) in [
-                (' ', "pub use button::{Button, ButtonSize};"),
-                ('+', "pub use command::{Combobox, Command};"),
-                (' ', "pub use data_table::{Column, DataTable};"),
-                ('-', "pub use layout::{tabs, Card};"),
-                ('+', "pub use layout::{tabs, Card, Table};"),
-                ('+', "pub use resizable::Resizable;"),
-            ] {
-                let color = match sign {
-                    '+' => green,
-                    '-' => t.destructive,
-                    _ => t.muted_foreground,
-                };
-                ui.label(RichText::new(format!("{sign} {line}")).monospace().size(12.0).color(color));
-            }
+        let r = TabBar::new("git_tabs").show(ui, &mut self.open_files, &mut self.active_file, |f| {
+            f.rsplit('/').next().unwrap_or(f).to_owned()
         });
+        if let Some(f) = r.closed {
+            if self.file == Some(f) {
+                self.file = None;
+            }
+        }
+        let Some(file) = self.open_files.get(self.active_file).copied() else {
+            ui.add_space(40.0);
+            Empty::new("No open files")
+                .icon("±")
+                .description("Pick a changed file to see its diff.")
+                .show(ui, |ui| {
+                    if ui.add(Button::outline("Open all changes").size(ButtonSize::Sm)).clicked() {
+                        for (f, _) in CHANGES {
+                            self.open(f);
+                        }
+                    }
+                });
+            return;
+        };
+        egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let diff = &self.diffs[file];
+                let count = |c: char| diff.lines().filter(|l| l.starts_with(c) && !l.starts_with("+++") && !l.starts_with("---")).count();
+                let green = if Theme::get(ui.ctx()).dark { egui::Color32::from_rgb(74, 222, 128) } else { egui::Color32::from_rgb(22, 163, 74) };
+                ui.label(RichText::new(format!("+{}", count('+'))).monospace().color(green));
+                ui.label(RichText::new(format!("-{}", count('-'))).monospace().color(Theme::get(ui.ctx()).destructive));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let mut mode = self.split_diff as usize;
+                    toggle_group(ui, &mut mode, &["Unified", "Split"]);
+                    self.split_diff = mode == 1;
+                });
+            });
+        });
+        let diff = &self.diffs[file];
+        DiffView::new(("git_diff", file), diff).split(self.split_diff).show(ui);
     }
 
     fn palette(&mut self, ctx: &Context) {
@@ -578,6 +725,9 @@ impl GitDemo {
                 if cmd.item("Toggle dark mode", None) {
                     action = Some("theme");
                 }
+                if cmd.item("Toggle split diff", None) {
+                    action = Some("split");
+                }
             });
         });
         if let Some(i) = checkout {
@@ -586,6 +736,7 @@ impl GitDemo {
         }
         match action {
             Some("theme") => self.dark = !self.dark,
+            Some("split") => self.split_diff = !self.split_diff,
             Some(a) => toast(ctx, format!("{a} finished"), None),
             None => {}
         }
