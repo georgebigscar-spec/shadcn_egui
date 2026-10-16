@@ -12,22 +12,26 @@
 
 mod basic;
 mod button;
+mod command;
 mod data_table;
 mod form;
 mod layout;
 mod overlay;
+mod resizable;
 mod theme;
 mod tree;
 
 pub use basic::{h1, h2, h3, kbd, label, muted, separator, Avatar, Badge, BadgeVariant, Progress, Skeleton};
 pub use button::{Button, ButtonSize, ButtonVariant};
+pub use command::{fuzzy_match, Combobox, Command, CommandResponse, CommandUi};
 pub use data_table::{Column, DataTable, DataTableResponse};
 pub use form::{radio_group, toggle_group, Checkbox, Input, RadioItem, Slider, Switch, Textarea, Toggle};
 pub use layout::{tabs, Accordion, Alert, Card, Table};
 pub use overlay::{
-    alert_dialog, dropdown_menu, footer, menu_checkbox, menu_item, menu_label, menu_separator,
+    alert_dialog, context_menu, dropdown_menu, footer, menu_checkbox, menu_item, menu_label, menu_separator,
     popover, toast, toast_error, Dialog, DialogResponse, Select, Toaster, TooltipExt,
 };
+pub use resizable::Resizable;
 pub use theme::{mix, paint_focus_ring, Theme};
 pub use tree::{Tree, TreeSelection, TreeUi};
 

@@ -6,10 +6,13 @@
 
 ![dark](tests/snapshots/gallery_dark.png)
 
+![git client](tests/snapshots/git_client.png)
+
 ## Running
 
 ```sh
 cargo run --example gallery     # demo gallery on eframe
+cargo run --example git_client  # Resizable, Combobox, Command (Ctrl+K) and context menus together
 UPDATE_SNAPSHOTS=1 cargo test   # re-render the screenshots in tests/snapshots/
 ```
 
@@ -65,6 +68,11 @@ Toaster::show(ctx); // once per frame, if you use toasts
 | Toggle Group | `toggle_group(ui, &mut idx, &["Left", "Center", "Right"])` | single selection |
 | Select | `Select::new(&mut Option<usize>, &OPTIONS).placeholder(..)` | popup list with a check mark |
 | Dropdown Menu | `dropdown_menu(&trigger, width, \|ui\| { menu_label, menu_item, menu_checkbox, menu_separator })` | shortcuts on the right |
+| Combobox | `Combobox::new(&mut Option<usize>, &branches).placeholder(..).search_placeholder(..).empty(..)` | Select with a search field; options can be `&str` or `String`; fuzzy filter, arrow keys, Enter |
+| Context Menu | `context_menu(&response, width, \|ui\| { menu_item, .. })` | right click on any clickable response (tree rows, buttons); `DataTable::row_context_menu(\|ui, row\| ..)` for table rows |
+| Command | `Command::new(id).show(ui, \|cmd\| { cmd.group("Branch", \|cmd\| if cmd.item("Checkout…", Some("⌘B")) { .. }) })` | search field over a list: fuzzy filter (`fuzzy_match`), groups hide when empty, arrow keys and Enter, `item_with_keywords`, "No results found." |
+| Command Dialog | `Command::new(id).show_dialog(ctx, &mut open, \|cmd\| ..)` | Ctrl+K palette in a modal; closes on pick, Escape or click outside. Bind the key yourself with `consume_shortcut` (see `demo::GitDemo`) |
+| Resizable | `Resizable::horizontal(id, &mut [0.25, 0.45, 0.3]).min_size(160.0).with_handle().show(ui, \|ui, panel\| ..)` | also `vertical`; the fractions are updated while dragging, so keep them in your app state |
 | Popover | `popover(&trigger, width, \|ui\| ..)` | closes on click outside |
 | Tooltip | `ui.add(..).tooltip("text")` (`TooltipExt` trait) | dark bubble, as in shadcn |
 | Dialog | `Dialog::new(id, "Title").description(..).show(ctx, \|ui\| ..)` + `footer(ui, ..)` | backdrop, ✕ button, Esc, click outside |
@@ -85,7 +93,7 @@ Toaster::show(ctx); // once per frame, if you use toasts
 ## Limitations
 
 - egui's default font has no bold weight, so headings are not bold. For an exact look, load Inter or Geist with `ctx.set_fonts` and give headings their own font family.
-- Not implemented yet: searchable Combobox, Calendar, Date Picker, Command, Sheet, Navigation Menu, Carousel, Chart, Resizable. For dates there is `egui_extras::DatePickerButton`, for charts the `egui_plot` crate.
+- Not implemented yet: Calendar, Date Picker, Sheet, Navigation Menu, Carousel, Chart. For dates there is `egui_extras::DatePickerButton`, for charts the `egui_plot` crate.
 - Colors are hex approximations of the shadcn v4 oklch variables; every field of `Theme` can be changed.
 
 ## License

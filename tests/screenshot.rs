@@ -249,3 +249,78 @@ fn data_table_commits() {
     eprintln!("data_table_commits: {per_frame:?} per frame with 20 000 rows");
     h.snapshot("data_table_commits");
 }
+
+fn git(dark: bool) -> Harness<'static, shadcn_egui::demo::GitDemo> {
+    let mut demo = shadcn_egui::demo::GitDemo::default();
+    demo.dark = dark;
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1100.0, 560.0))
+        .build_ui_state(|ui, demo: &mut shadcn_egui::demo::GitDemo| demo.ui(ui), demo);
+    h.run_steps(4);
+    h
+}
+
+/// Resizable panels, Combobox and the rest of a git client layout.
+#[test]
+fn git_client() {
+    git(false).snapshot("git_client");
+}
+
+/// Ctrl+K palette: fuzzy filter, arrow keys, Enter picks and closes.
+#[test]
+fn command_dialog() {
+    let mut h = git(true);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::K);
+    h.run_steps(4);
+    assert!(h.state().palette_open);
+    h.get_by_role(egui::accesskit::Role::TextInput).type_text("co fe");
+    h.run_steps(2);
+    h.key_press(egui::Key::ArrowDown);
+    h.run_steps(4);
+    h.snapshot("command_dialog");
+    h.key_press(egui::Key::Enter);
+    h.run_steps(4);
+    assert!(!h.state().palette_open);
+    assert_eq!(h.state().branch, Some(3), "feature/resizable-panels");
+}
+
+#[test]
+fn combobox_search() {
+    let mut h = git(false);
+    h.get_by_label("main").click();
+    h.run_steps(4);
+    h.get_by_role(egui::accesskit::Role::TextInput).type_text("feat");
+    h.run_steps(4);
+    h.snapshot("combobox");
+    h.get_by_label("feature/command-palette").click();
+    h.run_steps(4);
+    assert_eq!(h.state().branch, Some(2));
+    assert!(h.query_by_role(egui::accesskit::Role::TextInput).is_none(), "popup closed");
+}
+
+#[test]
+fn context_menu_on_row() {
+    let mut h = git(false);
+    h.get_by_label("Resizable panel groups").click_secondary();
+    h.run_steps(4);
+    h.snapshot("context_menu");
+}
+
+#[test]
+fn resizable_drag() {
+    let mut h = git(false);
+    let x = 16.0 + 1068.0 * h.state().sizes[0];
+    let from = egui::pos2(x, 300.0);
+    h.hover_at(from);
+    h.run_steps(1);
+    h.drag_at(from);
+    h.run_steps(1);
+    h.hover_at(from + egui::vec2(120.0, 0.0));
+    h.run_steps(1);
+    h.drop_at(from + egui::vec2(120.0, 0.0));
+    h.run_steps(4);
+    let sizes = h.state().sizes;
+    assert!((sizes[0] * 1068.0 - (x - 16.0) - 120.0).abs() < 4.0, "{sizes:?}");
+    assert!((sizes.iter().sum::<f32>() - 1.0).abs() < 1e-4);
+    h.snapshot("resizable");
+}

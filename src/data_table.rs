@@ -56,6 +56,7 @@ struct State {
 
 /// Draws one cell; see [`DataTable::cell_ui`].
 type CellUi<'a> = Box<dyn FnMut(&mut Ui, usize, usize) -> bool + 'a>;
+type RowMenu<'a> = Box<dyn FnMut(&mut Ui, usize) + 'a>;
 
 /// The filtered and sorted row order, recomputed only when its inputs change.
 #[derive(Clone)]
@@ -84,6 +85,7 @@ pub struct DataTable<'a> {
     row_height: f32,
     version: u64,
     cell_ui: Option<CellUi<'a>>,
+    context_menu: Option<RowMenu<'a>>,
 }
 
 impl<'a> DataTable<'a> {
@@ -98,6 +100,7 @@ impl<'a> DataTable<'a> {
             row_height: 44.0,
             version: 0,
             cell_ui: None,
+            context_menu: None,
         }
     }
     /// Adds a checkbox column; checked rows are stored in `selected`.
@@ -149,6 +152,13 @@ impl<'a> DataTable<'a> {
     /// ```
     pub fn cell_ui(mut self, f: impl FnMut(&mut Ui, usize, usize) -> bool + 'a) -> Self {
         self.cell_ui = Some(Box::new(f));
+        self
+    }
+
+    /// A right-click menu on each row: `f(ui, row)` adds the entries with
+    /// [`crate::menu_item`] and friends; `row` indexes into `rows`.
+    pub fn row_context_menu(mut self, f: impl FnMut(&mut Ui, usize) + 'a) -> Self {
+        self.context_menu = Some(Box::new(f));
         self
     }
 
@@ -255,9 +265,17 @@ impl<'a> DataTable<'a> {
                 // Body: one row of `page_rows`.
                 let mut row = |ui: &mut Ui, n: usize| {
                     let i = page_rows[n];
-                    let (rect, r) = ui.allocate_exact_size(Vec2::new(total, row_h), Sense::click());
+                    let (rect, _) = ui.allocate_exact_size(Vec2::new(total, row_h), Sense::hover());
+                    let r = ui.interact(rect, self.id.with(("row", i)), Sense::click());
+                    r.widget_info(|| {
+                        let text = rows[i].first().map(|s| s.as_ref()).unwrap_or("");
+                        egui::WidgetInfo::labeled(egui::WidgetType::Other, true, text)
+                    });
                     if r.clicked() {
                         response.clicked = Some(i);
+                    }
+                    if let Some(f) = self.context_menu.as_mut() {
+                        crate::overlay::context_menu(&r, 220.0, |ui| f(ui, i));
                     }
                     let is_selected = self.selection.as_deref().is_some_and(|s| s.contains(&i));
                     if is_selected {
