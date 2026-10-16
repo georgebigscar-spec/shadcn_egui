@@ -363,7 +363,7 @@ fn sidebar_changes() {
     assert_eq!(h.state().view, shadcn_egui::demo::GitView::Changes);
     h.get_by_label("Remotes").click();
     h.run_steps(8);
-    h.get_by_label("graph.rs").click();
+    h.get_all_by_label("src/graph.rs").next().unwrap().click(); // the row; its content repeats the path
     h.run_steps(4);
     assert_eq!(h.state().open_files.last(), Some(&"src/graph.rs"));
     h.snapshot("sidebar_changes");
@@ -375,4 +375,68 @@ fn fetch_shows_spinner() {
     h.get_by_label("Fetch").click();
     h.run_steps(2);
     assert!(h.query_by_label("Loading").is_some());
+}
+
+/// Menubar: click opens a menu, hovering the next trigger switches to it.
+#[test]
+fn menubar_switch() {
+    let mut h = git(false);
+    h.get_by_label("Repository").click();
+    h.run_steps(4);
+    assert!(h.query_by_label("Open in terminal").is_some());
+    let branch = h.get_by_label("Branch").rect().center();
+    h.hover_at(branch);
+    h.run_steps(4);
+    assert!(h.query_by_label("Open in terminal").is_none());
+    assert!(h.query_by_label("New branch…").is_some());
+    h.snapshot("menubar");
+}
+
+/// Sheet from the View menu; Escape closes it.
+#[test]
+fn sheet_details() {
+    let mut h = git(true);
+    h.get_by_label("View").click();
+    h.run_steps(4);
+    h.get_by_label("Commit details").click();
+    h.run_steps(30);
+    assert!(h.state().details_open);
+    h.snapshot("sheet");
+    h.key_press(egui::Key::Escape);
+    h.run_steps(4);
+    assert!(!h.state().details_open);
+}
+
+/// Hovering a commit hash shows its card after the delay.
+#[test]
+fn hover_card_on_hash() {
+    let mut h = git(false);
+    let pos = h.get_by_label("4f1c2a9").rect().center();
+    h.hover_at(pos);
+    h.run_steps(60);
+    assert_eq!(h.query_all_by_label("Merge branch 'feature/git-widgets'").count(), 2, "the row and the card");
+    h.snapshot("hover_card");
+}
+
+/// Changes view: InputGroup filter with clear, Collapsible groups, Breadcrumb navigation.
+#[test]
+fn changes_filter() {
+    let mut h = git(false);
+    h.get_by_label("command.rs").click(); // breadcrumb would need Changes; go via the sidebar
+    h.run_steps(2);
+    h.get_by_label("shadcn_egui").click(); // breadcrumb root opens the Changes view
+    h.run_steps(4);
+    assert_eq!(h.state().view, shadcn_egui::demo::GitView::Changes);
+    h.get_by_role(egui::accesskit::Role::TextInput).click();
+    h.run_steps(2);
+    h.get_by_role(egui::accesskit::Role::TextInput).type_text("ovr");
+    h.run_steps(4);
+    assert_eq!(h.state().file_filter, "ovr");
+    assert!(h.query_all_by_label("src/command.rs").next().is_none(), "filtered out");
+    h.get_by_label("Staged changes").click();
+    h.run_steps(10);
+    h.snapshot("changes_filter");
+    h.get_by_label("Clear").click();
+    h.run_steps(4);
+    assert!(h.state().file_filter.is_empty());
 }

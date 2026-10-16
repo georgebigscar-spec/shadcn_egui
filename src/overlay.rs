@@ -1,4 +1,4 @@
-//! Floating UI: Select, DropdownMenu, ContextMenu, Popover, Tooltip, Dialog, Toaster.
+//! Floating UI: Select, DropdownMenu, ContextMenu, Menubar, Popover, HoverCard, Sheet, Tooltip, Dialog, Toaster.
 
 use egui::{
     Align2, Color32, Context, CursorIcon, FontId, Frame, Id, Margin, Modal, Popup,
@@ -234,6 +234,231 @@ pub fn popover<R>(
         .frame(t.popover_frame().inner_margin(Margin::same(16)))
         .show(add_contents)
         .map(|r| r.inner)
+}
+
+// ---------------------------------------------------------------------------
+
+/// `<Menubar>`: a row of menus like File / Edit / View. Once one is open,
+/// hovering another trigger switches to it.
+///
+/// ```ignore
+/// menubar(ui, "main_menu", |mb| {
+///     mb.menu("Repository", |ui| {
+///         if menu_item(ui, "Fetch", Some("⌘F")).clicked() { /* ... */ }
+///     });
+///     mb.menu("Branch", |ui| { menu_item(ui, "New branch…", None); });
+/// });
+/// ```
+pub fn menubar<R>(ui: &mut Ui, id_salt: impl egui::AsId, add_menus: impl FnOnce(&mut MenubarUi<'_>) -> R) -> R {
+    let t = Theme::get(ui.ctx());
+    let id = Id::new(id_salt);
+    let open: Option<usize> = ui.data(|d| d.get_temp(id)).flatten();
+    let frame = Frame::new()
+        .fill(t.background)
+        .stroke(Stroke::new(1.0, t.border))
+        .corner_radius(t.radius_md())
+        .inner_margin(Margin::same(3))
+        .shadow(t.shadow_sm());
+    let (inner, new_open) = frame
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                let mut mb = MenubarUi { ui, id, open, new_open: None, index: 0 };
+                let r = add_menus(&mut mb);
+                (r, mb.new_open)
+            })
+            .inner
+        })
+        .inner;
+    ui.data_mut(|d| d.insert_temp(id, new_open));
+    inner
+}
+
+/// Adds menus inside [`menubar`].
+pub struct MenubarUi<'a> {
+    ui: &'a mut Ui,
+    id: Id,
+    open: Option<usize>,
+    new_open: Option<usize>,
+    index: usize,
+}
+
+impl MenubarUi<'_> {
+    /// `<MenubarMenu>` with a trigger labelled `title`. Build the contents with
+    /// [`menu_item`], [`menu_checkbox`], [`menu_label`] and [`menu_separator`].
+    pub fn menu<R>(&mut self, title: &str, add_contents: impl FnOnce(&mut Ui) -> R) -> Option<R> {
+        let t = Theme::get(self.ui.ctx());
+        let i = self.index;
+        self.index += 1;
+        let g = self.ui.painter().layout_no_wrap(title.to_owned(), FontId::proportional(14.0), Color32::PLACEHOLDER);
+        let (rect, _) = self.ui.allocate_exact_size(Vec2::new(g.size().x + 16.0, 28.0), Sense::hover());
+        let r = self.ui.interact(rect, self.id.with(i), Sense::click());
+        r.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, title));
+        let mut open = self.open == Some(i);
+        if r.clicked() {
+            open = !open;
+        } else if r.hovered() && self.open.is_some() && !open {
+            open = true;
+        }
+        let p = self.ui.painter();
+        if open || r.hovered() {
+            p.rect_filled(rect, t.radius_sm(), t.accent);
+        }
+        let fg = if open || r.hovered() { t.accent_foreground } else { t.foreground };
+        p.galley(rect.center() - g.size() / 2.0, g, fg);
+        if r.has_focus() {
+            paint_focus_ring(p, rect, t.radius_sm(), &t);
+        }
+        let out = Popup::from_response(&r)
+            .kind(egui::PopupKind::Menu)
+            .layout(egui::Layout::top_down_justified(egui::Align::Min))
+            .align(egui::RectAlign::BOTTOM_START)
+            .open_bool(&mut open)
+            .width(220.0)
+            .gap(6.0)
+            .frame(t.popover_frame())
+            .show(|ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                add_contents(ui)
+            })
+            .map(|r| r.inner);
+        if open {
+            self.new_open = Some(i);
+        }
+        out
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+/// `<HoverCard>`: a popover that appears after hovering `target` for a moment,
+/// for previews such as a commit behind its hash.
+///
+/// ```ignore
+/// let hash = ui.label(RichText::new("4f1c2a9").monospace());
+/// hover_card(&hash, 300.0, |ui| { ui.label("Merge branch 'feature/git-widgets'"); });
+/// ```
+pub fn hover_card<R>(target: &Response, width: f32, add_contents: impl FnOnce(&mut Ui) -> R) -> Option<R> {
+    let t = Theme::get(&target.ctx);
+    let mut tip = egui::Tooltip::for_enabled(target);
+    tip.popup = tip.popup.gap(6.0).width(width).frame(t.popover_frame().inner_margin(Margin::same(16)));
+    tip.show(|ui| {
+        ui.set_width(width - 32.0);
+        add_contents(ui)
+    })
+    .map(|r| r.inner)
+}
+
+// ---------------------------------------------------------------------------
+
+/// Which edge a [`Sheet`] slides in from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SheetSide {
+    Left,
+    #[default]
+    Right,
+    Top,
+    Bottom,
+}
+
+/// `<Sheet>`: a panel that slides in from an edge of the window over a dimmed
+/// backdrop, for details or settings. Closes on Escape, a click on the
+/// backdrop or the ✕ button.
+///
+/// ```ignore
+/// Sheet::new("details", "Commit 4f1c2a9").description("George · 2 hours ago")
+///     .show(ctx, &mut self.details_open, |ui| { /* ... */ });
+/// ```
+pub struct Sheet {
+    id: Id,
+    title: String,
+    description: Option<String>,
+    side: SheetSide,
+    size: f32,
+}
+
+impl Sheet {
+    pub fn new(id_salt: impl egui::AsId, title: impl Into<String>) -> Self {
+        Self { id: Id::new(id_salt), title: title.into(), description: None, side: SheetSide::Right, size: 384.0 }
+    }
+    pub fn description(mut self, text: impl Into<String>) -> Self {
+        self.description = Some(text.into());
+        self
+    }
+    pub fn side(mut self, side: SheetSide) -> Self {
+        self.side = side;
+        self
+    }
+    /// Width (left/right) or height (top/bottom); default 384, like `sm:max-w-sm`.
+    pub fn size(mut self, size: f32) -> Self {
+        self.size = size;
+        self
+    }
+
+    /// Shows the sheet while `open` is true; sets it to false when dismissed.
+    pub fn show<R>(self, ctx: &Context, open: &mut bool, add_contents: impl FnOnce(&mut Ui) -> R) -> Option<R> {
+        let shown = ctx.animate_bool_with_time(self.id.with("anim"), *open, 0.2);
+        if !*open {
+            return None;
+        }
+        let t = Theme::get(ctx);
+        let screen = ctx.content_rect();
+        let vertical = matches!(self.side, SheetSide::Left | SheetSide::Right);
+        let size = if vertical { Vec2::new(self.size, screen.height()) } else { Vec2::new(screen.width(), self.size) };
+        let hidden = (1.0 - shown) * self.size;
+        let (pivot, pos) = match self.side {
+            SheetSide::Right => (Align2::RIGHT_TOP, screen.right_top() + Vec2::new(hidden, 0.0)),
+            SheetSide::Left => (Align2::LEFT_TOP, screen.left_top() - Vec2::new(hidden, 0.0)),
+            SheetSide::Top => (Align2::LEFT_TOP, screen.left_top() - Vec2::new(0.0, hidden)),
+            SheetSide::Bottom => (Align2::LEFT_BOTTOM, screen.left_bottom() + Vec2::new(0.0, hidden)),
+        };
+        let area = egui::Area::new(self.id)
+            .kind(egui::UiKind::Modal)
+            .sense(Sense::hover())
+            .order(egui::Order::Foreground)
+            .interactable(true)
+            .pivot(pivot)
+            .fixed_pos(pos);
+        let mut close_clicked = false;
+        let modal = Modal::new(self.id)
+            .area(area)
+            .backdrop_color(Color32::from_black_alpha((128.0 * shown) as u8))
+            .frame(
+                Frame::new()
+                    .fill(t.background)
+                    .stroke(Stroke::new(1.0, t.border))
+                    .inner_margin(Margin::same(24))
+                    .shadow(t.shadow_lg()),
+            )
+            .show(ctx, |ui| {
+                ui.set_min_size(size - Vec2::splat(48.0));
+                ui.set_max_width(size.x - 48.0);
+                let top = ui.max_rect().right_top();
+                let close = Rect::from_center_size(top + Vec2::new(-4.0, 4.0), Vec2::splat(20.0));
+                let r = ui.interact(close, self.id.with("close"), Sense::click());
+                r.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, "Close"));
+                let c = if r.hovered() { t.foreground } else { t.muted_foreground };
+                let m = close.center();
+                let s = 4.5;
+                ui.painter().line_segment([m + Vec2::new(-s, -s), m + Vec2::new(s, s)], Stroke::new(1.5, c));
+                ui.painter().line_segment([m + Vec2::new(-s, s), m + Vec2::new(s, -s)], Stroke::new(1.5, c));
+                close_clicked = r.clicked();
+                ui.label(RichText::new(&self.title).size(16.0).color(t.foreground));
+                if let Some(d) = &self.description {
+                    ui.add_space(-4.0);
+                    ui.label(RichText::new(d).size(14.0).color(t.muted_foreground));
+                }
+                ui.add_space(8.0);
+                add_contents(ui)
+            });
+        if modal.should_close() || close_clicked {
+            *open = false;
+        }
+        if shown < 1.0 {
+            ctx.request_repaint();
+        }
+        Some(modal.inner)
+    }
 }
 
 // ---------------------------------------------------------------------------

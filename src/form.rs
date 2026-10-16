@@ -520,3 +520,165 @@ pub fn toggle_group(ui: &mut Ui, selected: &mut usize, items: &[&str]) -> Respon
     ui.painter().rect_stroke(rect, r, Stroke::new(1.0, t.input), StrokeKind::Inside);
     response
 }
+
+// ---------------------------------------------------------------------------
+
+/// `<ButtonGroup>` of outline buttons joined into one control, such as
+/// Fetch · Pull · Push. Returns one response per button, so you can check
+/// clicks or attach a [`crate::dropdown_menu`] to one of them.
+pub fn button_group(ui: &mut Ui, labels: &[&str]) -> Vec<Response> {
+    let t = Theme::get(ui.ctx());
+    let font = FontId::proportional(14.0);
+    let widths: Vec<f32> = labels
+        .iter()
+        .map(|s| ui.painter().layout_no_wrap(s.to_string(), font.clone(), Color32::PLACEHOLDER).size().x + 24.0)
+        .collect();
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(widths.iter().sum(), 32.0), Sense::hover());
+    let radius = t.radius_md();
+    ui.painter().add(t.shadow_sm().as_shape(rect, radius));
+    ui.painter().rect_filled(rect, radius, t.background);
+    let n = labels.len();
+    let mut x = rect.left();
+    let mut out = Vec::with_capacity(n);
+    for (i, (label, w)) in labels.iter().zip(&widths).enumerate() {
+        let item = Rect::from_min_size(Pos2::new(x, rect.top()), Vec2::new(*w, rect.height()));
+        x += w;
+        let r = ui
+            .interact(item, response.id.with(i), Sense::click())
+            .on_hover_cursor(CursorIcon::PointingHand);
+        r.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), *label));
+        let corners = CornerRadius {
+            nw: if i == 0 { radius.nw } else { 0 },
+            sw: if i == 0 { radius.sw } else { 0 },
+            ne: if i + 1 == n { radius.ne } else { 0 },
+            se: if i + 1 == n { radius.se } else { 0 },
+        };
+        let p = ui.painter();
+        if r.hovered() {
+            p.rect_filled(item, corners, t.accent);
+        }
+        let fg = if r.hovered() { t.accent_foreground } else { t.foreground };
+        p.text(item.center(), egui::Align2::CENTER_CENTER, *label, font.clone(), fg);
+        if i > 0 {
+            p.vline(item.left(), rect.y_range(), Stroke::new(1.0, t.input));
+        }
+        if r.has_focus() {
+            paint_focus_ring(p, item, corners, &t);
+        }
+        out.push(r);
+    }
+    ui.painter().rect_stroke(rect, radius, Stroke::new(1.0, t.input), StrokeKind::Inside);
+    out
+}
+
+// ---------------------------------------------------------------------------
+
+/// `<InputGroup>`: an [`Input`] with addons inside its border: a search icon
+/// in front, a clear button, and short text at the end such as a shortcut.
+///
+/// ```ignore
+/// ui.add(InputGroup::new(&mut self.query).placeholder("Search commits...").search_icon().clearable().suffix("⌘F"));
+/// ```
+#[must_use = "add it with `ui.add(...)`"]
+pub struct InputGroup<'t> {
+    text: &'t mut String,
+    placeholder: String,
+    width: Option<f32>,
+    search_icon: bool,
+    clearable: bool,
+    suffix: Option<String>,
+}
+
+impl<'t> InputGroup<'t> {
+    pub fn new(text: &'t mut String) -> Self {
+        Self { text, placeholder: String::new(), width: None, search_icon: false, clearable: false, suffix: None }
+    }
+    pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.placeholder = placeholder.into();
+        self
+    }
+    pub fn width(mut self, width: f32) -> Self {
+        self.width = Some(width);
+        self
+    }
+    /// A magnifier in front of the text.
+    pub fn search_icon(mut self) -> Self {
+        self.search_icon = true;
+        self
+    }
+    /// A ✕ button at the end that empties the field (shown when it has text).
+    pub fn clearable(mut self) -> Self {
+        self.clearable = true;
+        self
+    }
+    /// Muted text at the end, e.g. `"⌘F"` or `"12 results"`.
+    pub fn suffix(mut self, text: impl Into<String>) -> Self {
+        self.suffix = Some(text.into());
+        self
+    }
+}
+
+impl Widget for InputGroup<'_> {
+    fn ui(self, ui: &mut Ui) -> Response {
+        let t = Theme::get(ui.ctx());
+        let width = self.width.unwrap_or_else(|| ui.available_width());
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 36.0), Sense::hover());
+        let fill = if t.dark { t.input.gamma_multiply(0.3) } else { Color32::TRANSPARENT };
+        ui.painter().rect(rect, t.radius_md(), fill, Stroke::new(1.0, t.input), StrokeKind::Inside);
+
+        let mut left = rect.left() + 12.0;
+        if self.search_icon {
+            crate::command::paint_search_icon(ui.painter(), Pos2::new(rect.left() + 18.0, rect.center().y), t.muted_foreground);
+            left = rect.left() + 32.0;
+        }
+        let mut right = rect.right() - 8.0;
+        if let Some(s) = &self.suffix {
+            let g = ui.painter().layout_no_wrap(s.clone(), FontId::proportional(12.0), t.muted_foreground);
+            right -= g.size().x;
+            ui.painter().galley(Pos2::new(right, rect.center().y - g.size().y / 2.0), g, t.muted_foreground);
+            right -= 8.0;
+        }
+        let mut cleared = false;
+        if self.clearable && !self.text.is_empty() {
+            let x = Rect::from_center_size(Pos2::new(right - 10.0, rect.center().y), Vec2::splat(20.0));
+            right -= 24.0;
+            let r = ui.interact(x, ui.auto_id_with("input_group_clear"), Sense::click());
+            r.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, "Clear"));
+            let c = if r.hovered() { t.foreground } else { t.muted_foreground };
+            if r.hovered() {
+                ui.painter().rect_filled(x, t.radius_sm(), t.muted);
+            }
+            let m = x.center();
+            let s = 3.5;
+            ui.painter().line_segment([m + Vec2::new(-s, -s), m + Vec2::new(s, s)], Stroke::new(1.25, c));
+            ui.painter().line_segment([m + Vec2::new(-s, s), m + Vec2::new(s, -s)], Stroke::new(1.25, c));
+            if r.clicked() {
+                self.text.clear();
+                cleared = true;
+            }
+        }
+        let field = Rect::from_min_max(Pos2::new(left, rect.top()), Pos2::new(right, rect.bottom()));
+        let mut response = ui
+            .scope_builder(egui::UiBuilder::new().max_rect(field), |ui| {
+                ui.add(
+                    TextEdit::singleline(self.text)
+                        .frame(Frame::NONE)
+                        .font(FontId::proportional(14.0))
+                        .text_color(t.foreground)
+                        .hint_text(RichText::new(self.placeholder).color(t.muted_foreground))
+                        .vertical_align(egui::Align::Center)
+                        .min_size(field.size())
+                        .desired_width(field.width()),
+                )
+            })
+            .inner;
+        if cleared {
+            response.mark_changed();
+            response.request_focus();
+        }
+        if response.has_focus() {
+            paint_input_focus(ui, rect, &t, false);
+        }
+        response
+    }
+}

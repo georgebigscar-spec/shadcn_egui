@@ -457,6 +457,8 @@ pub struct GitDemo {
     pub open_files: Vec<&'static str>,
     pub active_file: usize,
     pub split_diff: bool,
+    pub details_open: bool,
+    pub file_filter: String,
     fetching_until: f64,
     file: Option<&'static str>,
     commits: Vec<Vec<String>>,
@@ -482,6 +484,8 @@ impl Default for GitDemo {
             open_files: vec!["src/command.rs", "src/overlay.rs", "README.md"],
             active_file: 1,
             split_diff: false,
+            details_open: false,
+            file_filter: String::new(),
             fetching_until: 0.0,
             file: Some("src/overlay.rs"),
             commits,
@@ -509,16 +513,14 @@ impl GitDemo {
             .frame(egui::Frame::new().fill(t.background).inner_margin(16))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    h3(ui, "shadcn_egui");
+                    self.menu(ui);
                     ui.add(Combobox::new(&mut self.branch, &BRANCHES)
                         .placeholder("Select branch")
                         .search_placeholder("Search branch...")
                         .empty("No branch found.")
                         .width(240.0));
-                    for action in ["Fetch", "Pull", "Push"] {
-                        if ui.add(Button::outline(action).size(ButtonSize::Sm)).clicked() {
-                            self.fetching_until = now + 1.5;
-                        }
+                    if button_group(ui, &["Fetch", "Pull", "Push"]).iter().any(|r| r.clicked()) {
+                        self.fetching_until = now + 1.5;
                     }
                     if now < self.fetching_until {
                         ui.add(Spinner::new());
@@ -550,7 +552,63 @@ impl GitDemo {
             });
 
         self.palette(ctx);
+        self.commit_sheet(ctx);
         Toaster::show(ctx);
+    }
+
+    fn menu(&mut self, ui: &mut Ui) {
+        menubar(ui, "git_menu", |mb| {
+            mb.menu("Repository", |ui| {
+                for (name, key) in [("Fetch", "⌘F"), ("Pull", "⌘P"), ("Push", "⇧⌘P")] {
+                    if menu_item(ui, name, Some(key)).clicked() {
+                        self.fetching_until = ui.input(|i| i.time) + 1.5;
+                    }
+                }
+                menu_separator(ui);
+                menu_item(ui, "Open in terminal", None);
+            });
+            mb.menu("Branch", |ui| {
+                menu_item(ui, "New branch…", Some("⌘N"));
+                menu_item(ui, "Merge into current…", None);
+                menu_item(ui, "Rebase current…", None);
+            });
+            mb.menu("View", |ui| {
+                menu_checkbox(ui, "Split diff", &mut self.split_diff);
+                menu_separator(ui);
+                if menu_item(ui, "Commit details", Some("⌘I")).clicked() {
+                    self.details_open = true;
+                }
+                if menu_item(ui, "Command palette", Some("⌘K")).clicked() {
+                    self.palette_open = true;
+                }
+            });
+        });
+    }
+
+    fn commit_sheet(&mut self, ctx: &Context) {
+        let (id, parents, subject, author) = HISTORY[self.commit];
+        Sheet::new("git_commit_sheet", subject)
+            .description(format!("{author} committed {id}"))
+            .show(ctx, &mut self.details_open, |ui| {
+                let t = Theme::get(ui.ctx());
+                ui.add_space(8.0);
+                for (k, v) in [("Commit", id.to_owned()), ("Parents", parents.join(", ")), ("Author", author.to_owned())] {
+                    ui.horizontal(|ui| {
+                        ui.add_sized([80.0, 20.0], egui::Label::new(RichText::new(k).color(t.muted_foreground)));
+                        ui.label(RichText::new(v).monospace());
+                    });
+                }
+                ui.add_space(8.0);
+                separator(ui);
+                ui.add_space(8.0);
+                label(ui, "Changed files");
+                for (path, status) in CHANGES {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(status).monospace().color(t.muted_foreground));
+                        ui.label(path);
+                    });
+                }
+            });
     }
 
     fn sidebar(&mut self, ui: &mut Ui) {
@@ -576,29 +634,31 @@ impl GitDemo {
 
     fn changes(&mut self, ui: &mut Ui) {
         let t = Theme::get(ui.ctx());
-        ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            ui.add_space(12.0);
-            ui.label(RichText::new("Changes").strong());
-        });
-        ui.add_space(4.0);
         let before = self.file;
-        egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 0)).show(ui, |ui| {
-            Tree::new("git_changes").default_open_depth(2).show(ui, &mut self.file, |tree| {
-                tree.folder("src", "src", |tree| {
-                    for (path, status) in CHANGES.iter().filter(|(p, _)| p.starts_with("src/")) {
-                        let row = tree.leaf_ui(*path, path, |ui| {
-                            ui.label(&path[4..]);
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.label(RichText::new(*status).monospace().color(t.muted_foreground));
+        egui::Frame::new().inner_margin(egui::Margin::same(12)).show(ui, |ui| {
+            ui.add(InputGroup::new(&mut self.file_filter).placeholder("Filter files...").search_icon().clearable());
+            ui.add_space(8.0);
+            let query = self.file_filter.clone();
+            let visible: Vec<(&str, &str)> = CHANGES.iter().copied().filter(|(p, _)| fuzzy_match(&query, p)).collect();
+            let staged: Vec<_> = visible.iter().filter(|(p, _)| *p == "README.md").copied().collect();
+            let unstaged: Vec<_> = visible.iter().filter(|(p, _)| *p != "README.md").copied().collect();
+            for (title, files) in [("Staged changes", staged), ("Changes", unstaged)] {
+                Collapsible::new(("git_group", title), title).trailing(files.len().to_string()).show(ui, |ui| {
+                    Tree::new(("git_files", title)).icons(true).show(ui, &mut self.file, |tree| {
+                        for (path, status) in &files {
+                            let name = path.rsplit('/').next().unwrap_or(path);
+                            let row = tree.leaf_ui(*path, path, |ui| {
+                                ui.label(name);
+                                ui.label(RichText::new(*path).size(12.0).color(t.muted_foreground));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.label(RichText::new(*status).monospace().color(t.muted_foreground));
+                                });
                             });
-                        });
-                        file_menu(&row, path);
-                    }
+                            file_menu(&row, path);
+                        }
+                    });
                 });
-                let row = tree.leaf("README.md", "README.md");
-                file_menu(&row, "README.md");
-            });
+            }
         });
         if self.file != before {
             if let Some(f) = self.file {
@@ -622,6 +682,8 @@ impl GitDemo {
         egui::Frame::new().inner_margin(egui::Margin::same(12)).show(ui, |ui| {
             let commits = &self.commits;
             let graph = &self.graph;
+            let mut details = None;
+            let show_details = &mut details;
             let r = DataTable::new(
                 "git_history",
                 vec![
@@ -639,7 +701,18 @@ impl GitDemo {
                     true
                 }
                 3 => {
-                    ui.label(RichText::new(&commits[row][3]).monospace().color(Theme::get(ui.ctx()).muted_foreground));
+                    let t = Theme::get(ui.ctx());
+                    let hash = ui.label(RichText::new(&commits[row][3]).monospace().color(t.muted_foreground));
+                    hover_card(&hash, 300.0, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.add(Avatar::new(&commits[row][2][..1]).size(32.0));
+                            ui.vertical(|ui| {
+                                ui.label(RichText::new(&commits[row][2]).color(t.foreground));
+                                muted(ui, &commits[row][3]);
+                            });
+                        });
+                        ui.label(RichText::new(&commits[row][1]).color(t.foreground));
+                    });
                     true
                 }
                 _ => false,
@@ -653,11 +726,18 @@ impl GitDemo {
                     }
                 }
                 menu_separator(ui);
+                if menu_item(ui, "Show details", Some("⌘I")).clicked() {
+                    *show_details = Some(row);
+                }
                 menu_item(ui, "Copy hash", Some("⌘C"));
             })
             .show(ui, commits);
             if let Some(row) = r.clicked {
                 self.commit = row;
+            }
+            if let Some(row) = details {
+                self.commit = row;
+                self.details_open = true;
             }
         });
     }
@@ -687,6 +767,12 @@ impl GitDemo {
         };
         egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
             ui.horizontal(|ui| {
+                let mut path: Vec<&str> = vec!["shadcn_egui"];
+                path.extend(file.split('/'));
+                if breadcrumb(ui, &path) == Some(0) {
+                    self.view = GitView::Changes;
+                }
+                ui.add_space(8.0);
                 let diff = &self.diffs[file];
                 let count = |c: char| diff.lines().filter(|l| l.starts_with(c) && !l.starts_with("+++") && !l.starts_with("---")).count();
                 let green = if Theme::get(ui.ctx()).dark { egui::Color32::from_rgb(74, 222, 128) } else { egui::Color32::from_rgb(22, 163, 74) };
