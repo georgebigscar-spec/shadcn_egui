@@ -422,3 +422,85 @@ impl<'a> Table<'a> {
         clicked
     }
 }
+
+// ---------------------------------------------------------------------------
+
+/// `<Breadcrumb>`: a path such as `repo › src › command.rs`. Every segment but
+/// the last (the current page) is a link; returns the index of a clicked one.
+pub fn breadcrumb(ui: &mut Ui, segments: &[&str]) -> Option<usize> {
+    let t = Theme::get(ui.ctx());
+    let mut clicked = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        for (i, seg) in segments.iter().enumerate() {
+            let last = i + 1 == segments.len();
+            let g = ui.painter().layout_no_wrap(seg.to_string(), FontId::proportional(14.0), Color32::PLACEHOLDER);
+            let (rect, r) = ui.allocate_exact_size(g.size(), if last { Sense::hover() } else { Sense::click() });
+            r.widget_info(|| egui::WidgetInfo::labeled(if last { egui::WidgetType::Label } else { egui::WidgetType::Link }, true, *seg));
+            let fg = if last || r.hovered() { t.foreground } else { t.muted_foreground };
+            ui.painter().galley(rect.min, g, fg);
+            if !last {
+                if r.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                    clicked = Some(i);
+                }
+                let (sep, _) = ui.allocate_exact_size(Vec2::new(10.0, 20.0), Sense::hover());
+                paint_chevron(ui.painter(), sep.center(), -std::f32::consts::FRAC_PI_2, t.muted_foreground);
+            }
+        }
+    });
+    clicked
+}
+
+// ---------------------------------------------------------------------------
+
+/// `<Collapsible>`: a header row with a chevron that shows or hides its body,
+/// e.g. "Staged changes (3)". Unlike [`Accordion`], any number can be open.
+pub struct Collapsible {
+    id: Id,
+    title: String,
+    trailing: Option<String>,
+    default_open: bool,
+}
+
+impl Collapsible {
+    pub fn new(id_salt: impl egui::AsId, title: impl Into<String>) -> Self {
+        Self { id: Id::new(id_salt), title: title.into(), trailing: None, default_open: true }
+    }
+    /// Muted text at the right of the header, such as a count.
+    pub fn trailing(mut self, text: impl Into<String>) -> Self {
+        self.trailing = Some(text.into());
+        self
+    }
+    pub fn default_open(mut self, open: bool) -> Self {
+        self.default_open = open;
+        self
+    }
+
+    /// Returns the body's result when it is shown.
+    pub fn show<R>(self, ui: &mut Ui, add_body: impl FnOnce(&mut Ui) -> R) -> Option<R> {
+        let t = Theme::get(ui.ctx());
+        let mut state = CollapsingState::load_with_default_open(ui.ctx(), self.id, self.default_open);
+        let width = ui.available_width();
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 32.0), Sense::hover());
+        let r = ui.interact(rect, self.id.with("header"), Sense::click()).on_hover_cursor(CursorIcon::PointingHand);
+        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::CollapsingHeader, true, &self.title));
+        if r.clicked() {
+            state.toggle(ui);
+        }
+        let openness = state.openness(ui.ctx());
+        let p = ui.painter();
+        if r.hovered() {
+            p.rect_filled(rect, t.radius_md(), t.accent);
+        }
+        let angle = -std::f32::consts::FRAC_PI_2 * (1.0 - openness);
+        paint_chevron(p, Pos2::new(rect.left() + 12.0, rect.center().y), angle, t.muted_foreground);
+        p.text(Pos2::new(rect.left() + 26.0, rect.center().y), Align2::LEFT_CENTER, &self.title, FontId::proportional(14.0), t.foreground);
+        if let Some(s) = &self.trailing {
+            p.text(Pos2::new(rect.right() - 8.0, rect.center().y), Align2::RIGHT_CENTER, s, FontId::proportional(12.0), t.muted_foreground);
+        }
+        if r.has_focus() {
+            paint_focus_ring(p, rect, t.radius_md(), &t);
+        }
+        state.show_body_unindented(ui, add_body).map(|r| r.inner)
+    }
+}

@@ -29,12 +29,13 @@ pub use button::{Button, ButtonSize, ButtonVariant};
 pub use command::{fuzzy_match, Combobox, Command, CommandResponse, CommandUi};
 pub use data_table::{Column, DataTable, DataTableResponse};
 pub use diff::DiffView;
-pub use form::{radio_group, toggle_group, Checkbox, Input, RadioItem, Slider, Switch, Textarea, Toggle};
+pub use form::{button_group, radio_group, toggle_group, InputGroup, Checkbox, Input, RadioItem, Slider, Switch, Textarea, Toggle};
 pub use graph::CommitGraph;
-pub use layout::{tabs, Accordion, Alert, Card, TabBar, TabBarResponse, Table};
+pub use layout::{breadcrumb, tabs, Accordion, Alert, Card, Collapsible, TabBar, TabBarResponse, Table};
 pub use overlay::{
-    alert_dialog, context_menu, dropdown_menu, footer, menu_checkbox, menu_item, menu_label, menu_separator,
-    popover, toast, toast_error, Dialog, DialogResponse, Select, Toaster, TooltipExt,
+    alert_dialog, context_menu, dropdown_menu, footer, hover_card, menu_checkbox, menu_item, menu_label,
+    menu_separator, menubar, popover, toast, toast_error, Dialog, DialogResponse, MenubarUi, Select, Sheet,
+    SheetSide, Toaster, TooltipExt,
 };
 pub use resizable::Resizable;
 pub use sidebar::{Sidebar, SidebarUi};

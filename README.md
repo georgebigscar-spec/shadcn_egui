@@ -73,6 +73,9 @@ Toaster::show(ctx); // once per frame, if you use toasts
 | Command | `Command::new(id).show(ui, \|cmd\| { cmd.group("Branch", \|cmd\| if cmd.item("Checkout…", Some("⌘B")) { .. }) })` | search field over a list: fuzzy filter (`fuzzy_match`), groups hide when empty, arrow keys and Enter, `item_with_keywords`, "No results found." |
 | Command Dialog | `Command::new(id).show_dialog(ctx, &mut open, \|cmd\| ..)` | Ctrl+K palette in a modal; closes on pick, Escape or click outside. Bind the key yourself with `consume_shortcut` (see `demo::GitDemo`) |
 | Resizable | `Resizable::horizontal(id, &mut [0.25, 0.45, 0.3]).min_size(160.0).with_handle().show(ui, \|ui, panel\| ..)` | also `vertical`; the fractions are updated while dragging, so keep them in your app state |
+| Menubar | `menubar(ui, id, \|mb\| { mb.menu("File", \|ui\| { menu_item(ui, "Open", Some("⌘O")); }); })` | hovering another trigger while one menu is open switches to it |
+| Hover Card | `hover_card(&response, 300.0, \|ui\| ..)` | popover after a hover delay, e.g. a commit card on its hash |
+| Sheet | `Sheet::new(id, "Title").description(..).side(SheetSide::Right).size(384.0).show(ctx, &mut open, \|ui\| ..)` | slides in from any edge over a backdrop; Escape, backdrop click or ✕ closes it |
 | Popover | `popover(&trigger, width, \|ui\| ..)` | closes on click outside |
 | Tooltip | `ui.add(..).tooltip("text")` (`TooltipExt` trait) | dark bubble, as in shadcn |
 | Dialog | `Dialog::new(id, "Title").description(..).show(ctx, \|ui\| ..)` + `footer(ui, ..)` | backdrop, ✕ button, Esc, click outside |
@@ -91,6 +94,10 @@ Toaster::show(ctx); // once per frame, if you use toasts
 | Empty | `Empty::new("No changes").icon("✓").description(..).show(ui, \|ui\| buttons)` | |
 | Diff (extra) | `DiffView::new(id, &git_diff_output).split(side_by_side).show(ui)` | parses unified diffs: file and hunk headers, old/new line numbers, green/red lines; side-by-side pairs deletions with additions; only visible rows are drawn |
 | Commit graph (extra) | `CommitGraph::new(commits.iter().map(\|c\| (id, parents)))`, then `graph.paint(ui, row)` in `DataTable::cell_ui` | lanes, merge commits, branches bending back into their parent's lane |
+| Button Group | `button_group(ui, &["Fetch", "Pull", "Push"]) -> Vec<Response>` | joined outline buttons; attach a `dropdown_menu` to any response |
+| Input Group | `InputGroup::new(&mut s).placeholder(..).search_icon().clearable().suffix("⌘F")` | addons inside the input's border |
+| Breadcrumb | `breadcrumb(ui, &["repo", "src", "main.rs"]) -> Option<usize>` | the last segment is the current page; returns a clicked segment |
+| Collapsible | `Collapsible::new(id, "Staged changes").trailing("3").default_open(true).show(ui, \|ui\| ..)` | animated; any number can be open, unlike Accordion |
 | Separator | `separator(ui)` | horizontal or vertical depending on layout |
 | Avatar | `Avatar::new("CN").image(src).size(40.0)` | initials until the image loads |
 | Skeleton | `Skeleton::new([w, h])`, `Skeleton::circle(d)` | pulsing |
@@ -99,7 +106,7 @@ Toaster::show(ctx); // once per frame, if you use toasts
 ## Limitations
 
 - egui's default font has no bold weight, so headings are not bold. For an exact look, load Inter or Geist with `ctx.set_fonts` and give headings their own font family.
-- Not implemented yet: Calendar, Date Picker, Sheet, Navigation Menu, Carousel, Chart. For dates there is `egui_extras::DatePickerButton`, for charts the `egui_plot` crate.
+- Not implemented yet: Calendar, Date Picker, Navigation Menu, Carousel, Chart, Pagination, Input OTP. For dates there is `egui_extras::DatePickerButton`, for charts the `egui_plot` crate.
 - Colors are hex approximations of the shadcn v4 oklch variables; every field of `Theme` can be changed.
 
 ## License

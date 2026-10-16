@@ -345,7 +345,7 @@ impl CommandUi<'_> {
     }
 }
 
-fn paint_search_icon(p: &egui::Painter, center: Pos2, color: Color32) {
+pub(crate) fn paint_search_icon(p: &egui::Painter, center: Pos2, color: Color32) {
     let stroke = Stroke::new(1.5, color);
     let c = center + Vec2::new(-1.0, -1.0);
     p.circle_stroke(c, 5.0, stroke);
