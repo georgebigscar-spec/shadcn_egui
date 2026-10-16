@@ -87,7 +87,12 @@ impl Command {
 
     /// Clears the query and highlight, as when the command is opened anew.
     pub fn reset(ctx: &Context, id_salt: impl egui::AsId) {
-        ctx.data_mut(|d| d.remove::<State>(Id::new(id_salt)));
+        Self::reset_id(ctx, Id::new(id_salt));
+    }
+
+    /// [`Self::reset`] for an already-built id (hashing it again would miss the state).
+    fn reset_id(ctx: &Context, id: Id) {
+        ctx.data_mut(|d| d.remove::<State>(id));
     }
 
     pub fn show<R>(self, ui: &mut Ui, add_items: impl FnOnce(&mut CommandUi<'_>) -> R) -> CommandResponse<R> {
@@ -219,7 +224,7 @@ impl Command {
     ) -> Option<R> {
         let id = self.id;
         if !*open {
-            Command::reset(ctx, id);
+            Command::reset_id(ctx, id);
             return None;
         }
         let t = Theme::get(ctx);
@@ -238,7 +243,7 @@ impl Command {
             });
         if modal.inner.chosen || modal.should_close() {
             *open = false;
-            Command::reset(ctx, id);
+            Command::reset_id(ctx, id);
         }
         Some(modal.inner.inner)
     }
@@ -446,5 +451,20 @@ impl<S: AsRef<str>> Widget for Combobox<'_, S> {
             response.mark_changed();
         }
         response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn closed_dialog_clears_the_query() {
+        let ctx = Context::default();
+        let id = Id::new("palette");
+        ctx.data_mut(|d| d.insert_temp(id, State { query: "feat".into(), active: 2, count: 3 }));
+        let mut open = false;
+        Command::new("palette").show_dialog(&ctx, &mut open, |_| ());
+        assert!(ctx.data(|d| d.get_temp::<State>(id)).is_none());
     }
 }
