@@ -1,4 +1,4 @@
-//! Floating UI: Select, DropdownMenu, Popover, Tooltip, Dialog, Toaster.
+//! Floating UI: Select, DropdownMenu, ContextMenu, Popover, Tooltip, Dialog, Toaster.
 
 use egui::{
     Align2, Color32, Context, CursorIcon, FontId, Frame, Id, Margin, Modal, Popup,
@@ -46,17 +46,10 @@ impl Widget for Select<'_> {
         });
         response = response.on_hover_cursor(CursorIcon::PointingHand);
 
-        let p = ui.painter();
-        let fill = if t.dark { t.input.gamma_multiply(0.3) } else { Color32::TRANSPARENT };
-        p.add(t.shadow_sm().as_shape(rect, t.radius_md()));
-        p.rect(rect, t.radius_md(), fill.to_opaque_or(t.background), Stroke::new(1.0, t.input), StrokeKind::Inside);
-        let (text, color) = match current {
-            Some(s) => (s.to_owned(), t.foreground),
-            None => (self.placeholder.clone(), t.muted_foreground),
-        };
-        let g = p.layout_no_wrap(text, FontId::proportional(14.0), color);
-        p.galley(Pos2::new(rect.left() + 12.0, rect.center().y - g.size().y / 2.0), g, color);
-        paint_chevron(p, Pos2::new(rect.right() - 16.0, rect.center().y), 0.0, t.muted_foreground);
+        match current {
+            Some(s) => paint_select_trigger(ui, rect, s, t.foreground, &t),
+            None => paint_select_trigger(ui, rect, &self.placeholder, t.muted_foreground, &t),
+        }
 
         let mut changed = false;
         let popup = Popup::menu(&response)
@@ -82,6 +75,19 @@ impl Widget for Select<'_> {
         }
         response
     }
+}
+
+/// The input-like box of a Select or Combobox: text on the left, chevron on the right.
+pub(crate) fn paint_select_trigger(ui: &Ui, rect: Rect, text: &str, color: Color32, t: &Theme) {
+    let p = ui.painter();
+    let fill = if t.dark { t.input.gamma_multiply(0.3) } else { Color32::TRANSPARENT };
+    p.add(t.shadow_sm().as_shape(rect, t.radius_md()));
+    p.rect(rect, t.radius_md(), fill.to_opaque_or(t.background), Stroke::new(1.0, t.input), StrokeKind::Inside);
+    let g = p.layout_no_wrap(text.to_owned(), FontId::proportional(14.0), color);
+    let clip = rect.shrink2(Vec2::new(12.0, 0.0)).with_max_x(rect.right() - 28.0);
+    p.with_clip_rect(clip.intersect(p.clip_rect()))
+        .galley(Pos2::new(rect.left() + 12.0, rect.center().y - g.size().y / 2.0), g, color);
+    paint_chevron(p, Pos2::new(rect.right() - 16.0, rect.center().y), 0.0, t.muted_foreground);
 }
 
 trait OpaqueOr {
@@ -136,6 +142,33 @@ pub fn dropdown_menu<R>(
     Popup::menu(trigger)
         .width(width)
         .gap(4.0)
+        .frame(t.popover_frame())
+        .show(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            add_contents(ui)
+        })
+        .map(|r| r.inner)
+}
+
+/// `<ContextMenu>`: the same menu as [`dropdown_menu`], opened by a right click
+/// on `target` at the pointer. `target` must sense clicks (buttons, tree rows,
+/// or `ui.interact(rect, id, Sense::click())`).
+///
+/// ```ignore
+/// let row = tree.leaf(path, name);
+/// context_menu(&row, 220.0, |ui| {
+///     if menu_item(ui, "Stage", None).clicked() { /* ... */ }
+///     menu_item(ui, "Discard changes", None);
+/// });
+/// ```
+pub fn context_menu<R>(
+    target: &Response,
+    width: f32,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> Option<R> {
+    let t = Theme::get(&target.ctx);
+    Popup::context_menu(target)
+        .width(width)
         .frame(t.popover_frame())
         .show(|ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
