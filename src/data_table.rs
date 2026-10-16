@@ -268,7 +268,7 @@ impl<'a> DataTable<'a> {
                     let (rect, _) = ui.allocate_exact_size(Vec2::new(total, row_h), Sense::hover());
                     let r = ui.interact(rect, self.id.with(("row", i)), Sense::click());
                     r.widget_info(|| {
-                        let text = rows[i].first().map(|s| s.as_ref()).unwrap_or("");
+                        let text = rows[i].iter().map(|s| s.as_ref()).find(|s| !s.is_empty()).unwrap_or("");
                         egui::WidgetInfo::labeled(egui::WidgetType::Other, true, text)
                     });
                     if r.clicked() {
