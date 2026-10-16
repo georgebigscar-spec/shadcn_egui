@@ -76,6 +76,9 @@ Toaster::show(ctx); // once per frame, if you use toasts
 | Menubar | `menubar(ui, id, \|mb\| { mb.menu("File", \|ui\| { menu_item(ui, "Open", Some("⌘O")); }); })` | hovering another trigger while one menu is open switches to it |
 | Hover Card | `hover_card(&response, 300.0, \|ui\| ..)` | popover after a hover delay, e.g. a commit card on its hash |
 | Sheet | `Sheet::new(id, "Title").description(..).side(SheetSide::Right).size(384.0).show(ctx, &mut open, \|ui\| ..)` | slides in from any edge over a backdrop; Escape, backdrop click or ✕ closes it |
+| Calendar | `Calendar::new(id).show(ui, &mut Option<Date>)`, `.show_range(ui, &mut DateRange)` | `.monday_first()`, `.min_date(..)` / `.max_date(..)`, `.today(..)`; ships its own small `Date` type (`Date::new`, `today`, `add_days`, `weekday`, `iso`, `long`), so no date crate is needed |
+| Date Picker | `DatePicker::new(id, &mut Option<Date>)`, `DateRangePicker::new(id, &mut DateRange)` | Calendar in a popover; `.calendar(\|c\| c.max_date(Date::today()))` configures it; the range picker closes once both ends are picked |
+| Pagination | `pagination(ui, &mut page, page_count)` | `‹ Previous 1 … 4 5 6 … 20 Next ›`, 0-based `page` |
 | Popover | `popover(&trigger, width, \|ui\| ..)` | closes on click outside |
 | Tooltip | `ui.add(..).tooltip("text")` (`TooltipExt` trait) | dark bubble, as in shadcn |
 | Dialog | `Dialog::new(id, "Title").description(..).show(ctx, \|ui\| ..)` + `footer(ui, ..)` | backdrop, ✕ button, Esc, click outside |
@@ -106,7 +109,7 @@ Toaster::show(ctx); // once per frame, if you use toasts
 ## Limitations
 
 - egui's default font has no bold weight, so headings are not bold. For an exact look, load Inter or Geist with `ctx.set_fonts` and give headings their own font family.
-- Not implemented yet: Calendar, Date Picker, Navigation Menu, Carousel, Chart, Pagination, Input OTP. For dates there is `egui_extras::DatePickerButton`, for charts the `egui_plot` crate.
+- Not implemented yet: Navigation Menu, Carousel, Chart, Input OTP. For charts there is the `egui_plot` crate.
 - Colors are hex approximations of the shadcn v4 oklch variables; every field of `Theme` can be changed.
 
 ## License
