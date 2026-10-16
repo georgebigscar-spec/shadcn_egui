@@ -57,6 +57,7 @@ impl Widget for Select<'_> {
             .gap(4.0)
             .frame(t.popover_frame())
             .show(|ui| {
+                ui.set_min_width(self.width);
                 ui.spacing_mut().item_spacing.y = 0.0;
                 for (i, option) in self.options.iter().enumerate() {
                     let is_sel = *self.selected == Some(i);
@@ -103,7 +104,19 @@ impl OpaqueOr for Color32 {
 /// shortcut on the right, check mark when `checked`.
 fn menu_row(ui: &mut Ui, text: &str, shortcut: Option<&str>, checked: bool) -> Response {
     let t = Theme::get(ui.ctx());
-    let width = ui.available_width();
+    let text_width = |s: &str, size: f32| {
+        ui.painter().layout_no_wrap(s.to_owned(), FontId::proportional(size), t.popover_foreground).size().x
+    };
+    let mut desired = 8.0 + text_width(text, 14.0) + 8.0;
+    if let Some(s) = shortcut {
+        desired += 24.0 + text_width(s, 12.0);
+    }
+    if checked {
+        desired += 24.0;
+    }
+    // During the popup's sizing pass take only what the content needs, so the
+    // menu ends up as wide as its widest row; afterwards fill that width.
+    let width = if ui.is_sizing_pass() { desired } else { ui.available_width().max(desired) };
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 32.0), Sense::click());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), text));
     let p = ui.painter();
@@ -144,6 +157,7 @@ pub fn dropdown_menu<R>(
         .gap(4.0)
         .frame(t.popover_frame())
         .show(|ui| {
+            ui.set_min_width(width);
             ui.spacing_mut().item_spacing.y = 0.0;
             add_contents(ui)
         })
@@ -171,6 +185,7 @@ pub fn context_menu<R>(
         .width(width)
         .frame(t.popover_frame())
         .show(|ui| {
+            ui.set_min_width(width);
             ui.spacing_mut().item_spacing.y = 0.0;
             add_contents(ui)
         })
@@ -209,7 +224,8 @@ pub fn menu_label(ui: &mut Ui, text: &str) {
 
 pub fn menu_separator(ui: &mut Ui) {
     let t = Theme::get(ui.ctx());
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 9.0), Sense::hover());
+    let width = if ui.is_sizing_pass() { 0.0 } else { ui.available_width() };
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 9.0), Sense::hover());
     ui.painter().hline(
         (rect.left() - 4.0)..=(rect.right() + 4.0),
         rect.center().y,
@@ -318,6 +334,7 @@ impl MenubarUi<'_> {
             .gap(6.0)
             .frame(t.popover_frame())
             .show(|ui| {
+                ui.set_min_width(220.0);
                 ui.spacing_mut().item_spacing.y = 0.0;
                 add_contents(ui)
             })
