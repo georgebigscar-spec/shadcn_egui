@@ -547,3 +547,66 @@ fn date_picker() {
     h.run_steps(4);
     assert_eq!(*h.state(), Date::new(2026, 3, 1));
 }
+
+/// History rows carry branch and tag labels in the color of their graph lane.
+#[test]
+fn history_refs() {
+    let mut h = git(true);
+    assert!(h.query_by_label("origin/main").is_some());
+    assert!(h.query_by_label("v0.1.0").is_some());
+    h.snapshot("history_refs");
+}
+
+/// Find in diff highlights every hit; clicking diff lines selects them for staging.
+#[test]
+fn diff_search_and_stage() {
+    let mut h = git(false);
+    h.get_by_label("Find in diff").click();
+    h.run_steps(2);
+    h.get_by_role(egui::accesskit::Role::TextInput).type_text("paint");
+    h.run_steps(4);
+    assert_eq!(h.state().diff_query, "paint");
+    assert!(h.query_by_label("1 of 3").is_some(), "painter, and paint_select_trigger twice");
+    h.get_by_label("⬇").click();
+    h.run_steps(4);
+    assert_eq!(h.state().diff_match, 1);
+    // Click the two added lines (rows 6 and 7 of the diff, 20 px each).
+    let top = h.get_by_label("Done").rect().bottom() + 8.0;
+    let x = h.get_by_label("Done").rect().left();
+    for row in [6.0, 7.0] {
+        let pos = egui::pos2(x, top + row * 20.0 + 10.0);
+        h.hover_at(pos);
+        h.run_steps(1);
+        h.drag_at(pos);
+        h.run_steps(1);
+        h.drop_at(pos);
+        h.run_steps(2);
+    }
+    assert_eq!(h.state().diff_lines.len(), 2, "{:?}", h.state().diff_lines);
+    h.snapshot("diff_search");
+    h.get_by_label("Stage 2 lines").click();
+    h.run_steps(4);
+    assert!(h.state().diff_lines.is_empty());
+    assert!(h.query_by_label("Staged 2 lines").is_some());
+}
+
+/// A loading toast turns into a success; Undo on a discard toast is reported back.
+#[test]
+fn toasts_update_and_undo() {
+    let mut h = git(false);
+    h.get_by_label("Fetch").click();
+    h.run_steps(4);
+    assert_eq!(h.query_all_by_label("Fetching origin…").count(), 2, "status text and toast");
+    h.run_steps(8); // each step is 0.25 s; the fetch takes 1.5 s
+    assert!(h.query_by_label("Fetched origin").is_some(), "the loading toast was updated");
+    h.get_by_label("Changes").click();
+    h.run_steps(2);
+    h.get_all_by_label("src/overlay.rs").next().unwrap().click_secondary();
+    h.run_steps(4);
+    h.get_by_label("Discard changes").click();
+    h.run_steps(4);
+    h.snapshot("toasts");
+    h.get_by_label("Undo").click();
+    h.run_steps(4);
+    assert!(h.query_by_label("Changes restored").is_some());
+}

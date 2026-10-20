@@ -30,18 +30,18 @@ pub use button::{Button, ButtonSize, ButtonVariant};
 pub use calendar::{days_in_month, Calendar, Date, DatePicker, DateRange, DateRangePicker};
 pub use command::{fuzzy_match, Combobox, Command, CommandResponse, CommandUi};
 pub use data_table::{Column, DataTable, DataTableResponse};
-pub use diff::DiffView;
+pub use diff::{partial_patch, DiffView, DiffViewResponse};
 pub use form::{button_group, radio_group, toggle_group, InputGroup, Checkbox, Input, RadioItem, Slider, Switch, Textarea, Toggle};
-pub use graph::CommitGraph;
+pub use graph::{CommitGraph, RefBadge, RefKind};
 pub use layout::{breadcrumb, pagination, tabs, Accordion, Alert, Card, Collapsible, TabBar, TabBarResponse, Table};
 pub use overlay::{
     alert_dialog, context_menu, dropdown_menu, footer, hover_card, menu_checkbox, menu_item, menu_label,
     menu_separator, menubar, popover, toast, toast_error, Dialog, DialogResponse, MenubarUi, Select, Sheet,
-    SheetSide, Toaster, TooltipExt,
+    SheetSide, Toast, ToastId, ToastKind, Toaster, TooltipExt,
 };
 pub use resizable::Resizable;
 pub use sidebar::{Sidebar, SidebarUi};
 pub use theme::{mix, paint_focus_ring, Theme};
-pub use tree::{Tree, TreeSelection, TreeUi};
+pub use tree::{git_status_color, Tree, TreeSelection, TreeUi};
 
 pub mod demo;
