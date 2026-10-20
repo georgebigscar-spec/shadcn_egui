@@ -602,22 +602,143 @@ pub fn alert_dialog(
 
 // ---------------------------------------------------------------------------
 
-#[derive(Clone)]
-struct Toast {
-    id: u64,
+/// The look of a [`Toast`]: an icon on the left, and for errors a red title.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ToastKind {
+    #[default]
+    Default,
+    Success,
+    Info,
+    Warning,
+    Error,
+    /// A spinner; stays until it is updated (see [`Toast::update`]) or dismissed.
+    Loading,
+}
+
+/// Names a queued toast, to update it or to tell which action was clicked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ToastId(u64);
+
+/// A Sonner-style toast with an optional icon, description and action button.
+///
+/// ```ignore
+/// let id = Toast::new("Pushing to origin…").loading().show(ctx);
+/// // later, when the push is done:
+/// Toast::new("Pushed to origin").success().update(ctx, id);
+///
+/// let undo = Toast::new("Changes discarded").action("Undo").show(ctx);
+/// // every frame:
+/// if Toaster::show(ctx) == Some(undo) { /* restore */ }
+/// ```
+///
+/// Toasts close after 4 seconds (see [`Toast::duration`]) unless they are
+/// loading; hovering any toast pauses the timers, clicking one dismisses it.
+#[must_use = "queue it with `.show(ctx)`"]
+#[derive(Clone, Debug)]
+pub struct Toast {
     title: String,
     description: Option<String>,
-    created: f64,
-    destructive: bool,
+    kind: ToastKind,
+    action: Option<String>,
+    duration: Option<f64>,
+}
+
+impl Toast {
+    pub fn new(title: impl Into<String>) -> Self {
+        Self { title: title.into(), description: None, kind: ToastKind::Default, action: None, duration: None }
+    }
+    pub fn description(mut self, text: impl Into<String>) -> Self {
+        self.description = Some(text.into());
+        self
+    }
+    pub fn kind(mut self, kind: ToastKind) -> Self {
+        self.kind = kind;
+        self
+    }
+    pub fn success(self) -> Self {
+        self.kind(ToastKind::Success)
+    }
+    pub fn info(self) -> Self {
+        self.kind(ToastKind::Info)
+    }
+    pub fn warning(self) -> Self {
+        self.kind(ToastKind::Warning)
+    }
+    pub fn error(self) -> Self {
+        self.kind(ToastKind::Error)
+    }
+    pub fn loading(self) -> Self {
+        self.kind(ToastKind::Loading)
+    }
+    /// A button on the right; [`Toaster::show`] returns this toast's id when it is clicked.
+    pub fn action(mut self, label: impl Into<String>) -> Self {
+        self.action = Some(label.into());
+        self
+    }
+    /// Seconds before it closes (default 4).
+    pub fn duration(mut self, seconds: f64) -> Self {
+        self.duration = Some(seconds);
+        self
+    }
+
+    /// Queues the toast.
+    pub fn show(self, ctx: &Context) -> ToastId {
+        ctx.data_mut(|d| {
+            let s = d.get_temp_mut_or_default::<ToastState>(toast_state_id());
+            s.next_id += 1;
+            let id = ToastId(s.next_id);
+            s.toasts.push(Queued { id, toast: self, elapsed: 0.0 });
+            id
+        })
+    }
+
+    /// Replaces toast `id` with this one and restarts its timer, for example to
+    /// turn a loading toast into a success. If `id` was already closed, the
+    /// toast is shown again.
+    pub fn update(self, ctx: &Context, id: ToastId) {
+        ctx.data_mut(|d| {
+            let s = d.get_temp_mut_or_default::<ToastState>(toast_state_id());
+            match s.toasts.iter_mut().find(|q| q.id == id) {
+                Some(q) => {
+                    q.toast = self;
+                    q.elapsed = 0.0;
+                }
+                None => s.toasts.push(Queued { id, toast: self, elapsed: 0.0 }),
+            }
+        });
+    }
+
+    /// Closes toast `id`.
+    pub fn dismiss(ctx: &Context, id: ToastId) {
+        ctx.data_mut(|d| d.get_temp_mut_or_default::<ToastState>(toast_state_id()).toasts.retain(|q| q.id != id));
+    }
+
+    fn lifetime(&self) -> f64 {
+        match (self.duration, self.kind) {
+            (Some(d), _) => d,
+            (None, ToastKind::Loading) => f64::INFINITY,
+            (None, _) => 4.0,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct Queued {
+    id: ToastId,
+    toast: Toast,
+    /// Seconds shown, not counting time with the pointer over the toasts.
+    elapsed: f64,
 }
 
 #[derive(Clone, Default)]
 struct ToastState {
     next_id: u64,
-    toasts: Vec<Toast>,
+    toasts: Vec<Queued>,
+    last_time: Option<f64>,
+    hovered: bool,
 }
 
-/// Sonner-style toasts. Call [`toast`] anywhere, and [`Toaster::show`] once per frame.
+/// Draws the toasts queued with [`Toast::show`], [`toast`] and [`toast_error`].
 pub struct Toaster;
 
 fn toast_state_id() -> Id {
@@ -626,43 +747,49 @@ fn toast_state_id() -> Id {
 
 /// Queues a toast with an optional description.
 pub fn toast(ctx: &Context, title: impl Into<String>, description: Option<&str>) {
-    push_toast(ctx, title.into(), description.map(str::to_owned), false);
+    let mut t = Toast::new(title);
+    t.description = description.map(str::to_owned);
+    let _ = t.show(ctx);
 }
 
 /// Queues a red error toast.
 pub fn toast_error(ctx: &Context, title: impl Into<String>, description: Option<&str>) {
-    push_toast(ctx, title.into(), description.map(str::to_owned), true);
-}
-
-fn push_toast(ctx: &Context, title: String, description: Option<String>, destructive: bool) {
-    let now = ctx.input(|i| i.time);
-    ctx.data_mut(|d| {
-        let s = d.get_temp_mut_or_default::<ToastState>(toast_state_id());
-        s.next_id += 1;
-        let id = s.next_id;
-        s.toasts.push(Toast { id, title, description, created: now, destructive });
-    });
+    let mut t = Toast::new(title).error();
+    t.description = description.map(str::to_owned);
+    let _ = t.show(ctx);
 }
 
 impl Toaster {
-    const LIFETIME: f64 = 4.0;
-
-    pub fn show(ctx: &Context) {
+    /// Draws the toasts; call it once per frame. Returns the toast whose action
+    /// button was clicked this frame (that toast closes).
+    pub fn show(ctx: &Context) -> Option<ToastId> {
         let t = Theme::get(ctx);
         let now = ctx.input(|i| i.time);
         let mut state = ctx.data(|d| d.get_temp::<ToastState>(toast_state_id())).unwrap_or_default();
-        state.toasts.retain(|toast| now - toast.created < Self::LIFETIME);
+        let dt = state.last_time.map_or(0.0, |last| (now - last).max(0.0));
+        state.last_time = Some(now);
+        if !state.hovered {
+            for q in &mut state.toasts {
+                q.elapsed += dt;
+            }
+        }
+        state.toasts.retain(|q| q.elapsed < q.toast.lifetime());
         if state.toasts.is_empty() {
+            state.hovered = false;
             ctx.data_mut(|d| d.insert_temp(toast_state_id(), state));
-            return;
+            return None;
         }
         let mut dismissed = None;
+        let mut clicked_action = None;
+        let mut hovered = false;
         let screen = ctx.content_rect();
         let mut bottom = screen.bottom() - 16.0;
-        for toast in state.toasts.iter().rev().take(3) {
-            let age = (now - toast.created) as f32;
-            let fade = (age / 0.15).min(1.0).min(((Self::LIFETIME as f32) - age) / 0.3).clamp(0.0, 1.0);
-            let area = egui::Area::new(Id::new(("shadcn_toast", toast.id)))
+        for q in state.toasts.iter().rev().take(3) {
+            let toast = &q.toast;
+            let age = q.elapsed as f32;
+            let left = (toast.lifetime() - q.elapsed) as f32;
+            let fade = (age / 0.15).min(1.0).min(left / 0.3).clamp(0.0, 1.0);
+            let area = egui::Area::new(Id::new(("shadcn_toast", q.id.0)))
                 .order(egui::Order::Foreground)
                 .pivot(Align2::RIGHT_BOTTOM)
                 .fixed_pos(Pos2::new(screen.right() - 16.0, bottom + (1.0 - fade) * 12.0))
@@ -676,23 +803,86 @@ impl Toaster {
                         .shadow(t.shadow_lg())
                         .show(ui, |ui| {
                             ui.set_width(324.0);
-                            let title_color = if toast.destructive { t.destructive } else { t.popover_foreground };
-                            ui.label(RichText::new(&toast.title).size(14.0).strong().color(title_color));
-                            if let Some(d) = &toast.description {
-                                ui.add_space(-4.0);
-                                ui.label(RichText::new(d).size(13.0).color(t.muted_foreground));
-                            }
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if let Some(label) = &toast.action {
+                                    if ui.add(Button::new(label.as_str()).size(crate::ButtonSize::Sm)).clicked() {
+                                        clicked_action = Some(q.id);
+                                    }
+                                    ui.add_space(4.0);
+                                }
+                                ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+                                    if toast.kind != ToastKind::Default {
+                                        let (rect, _) = ui.allocate_exact_size(Vec2::new(16.0, 20.0), Sense::hover());
+                                        paint_toast_icon(ui, rect, toast.kind, &t);
+                                        ui.add_space(4.0);
+                                    }
+                                    ui.vertical(|ui| {
+                                        let title_color = if toast.kind == ToastKind::Error { t.destructive } else { t.popover_foreground };
+                                        ui.label(RichText::new(&toast.title).size(14.0).strong().color(title_color));
+                                        if let Some(d) = &toast.description {
+                                            ui.add_space(-4.0);
+                                            ui.label(RichText::new(d).size(13.0).color(t.muted_foreground));
+                                        }
+                                    });
+                                });
+                            });
                         });
                 });
-            if area.response.interact(Sense::click()).clicked() {
-                dismissed = Some(toast.id);
+            hovered |= area.response.contains_pointer();
+            if clicked_action.is_none() && toast.kind != ToastKind::Loading && area.response.interact(Sense::click()).clicked() {
+                dismissed = Some(q.id);
             }
             bottom -= area.response.rect.height() + 12.0;
         }
-        if let Some(id) = dismissed {
+        state.hovered = hovered;
+        if let Some(id) = dismissed.or(clicked_action) {
             state.toasts.retain(|x| x.id != id);
         }
         ctx.data_mut(|d| d.insert_temp(toast_state_id(), state));
         ctx.request_repaint();
+        clicked_action
+    }
+}
+
+fn paint_toast_icon(ui: &Ui, rect: Rect, kind: ToastKind, t: &Theme) {
+    let p = ui.painter();
+    let c = rect.center();
+    let r = 7.0;
+    let (green, amber, blue) = if t.dark {
+        (Color32::from_rgb(74, 222, 128), Color32::from_rgb(250, 204, 21), Color32::from_rgb(96, 165, 250))
+    } else {
+        (Color32::from_rgb(22, 163, 74), Color32::from_rgb(202, 138, 4), Color32::from_rgb(37, 99, 235))
+    };
+    let stroke = |color| Stroke::new(1.5, color);
+    match kind {
+        ToastKind::Default => {}
+        ToastKind::Success => {
+            p.circle_stroke(c, r, stroke(green));
+            paint_check(p, Rect::from_center_size(c, Vec2::splat(8.0)), green, 1.5);
+        }
+        ToastKind::Error => {
+            p.circle_stroke(c, r, stroke(t.destructive));
+            let d = 2.6;
+            p.line_segment([c + Vec2::new(-d, -d), c + Vec2::new(d, d)], stroke(t.destructive));
+            p.line_segment([c + Vec2::new(d, -d), c + Vec2::new(-d, d)], stroke(t.destructive));
+        }
+        ToastKind::Info => {
+            p.circle_stroke(c, r, stroke(blue));
+            p.line_segment([c + Vec2::new(0.0, -0.5), c + Vec2::new(0.0, 3.5)], stroke(blue));
+            p.circle_filled(c + Vec2::new(0.0, -3.2), 0.9, blue);
+        }
+        ToastKind::Warning => {
+            let pts = vec![c + Vec2::new(0.0, -7.0), c + Vec2::new(7.5, 6.0), c + Vec2::new(-7.5, 6.0)];
+            p.add(egui::Shape::closed_line(pts, stroke(amber)));
+            p.line_segment([c + Vec2::new(0.0, -2.5), c + Vec2::new(0.0, 1.5)], stroke(amber));
+            p.circle_filled(c + Vec2::new(0.0, 3.8), 0.9, amber);
+        }
+        ToastKind::Loading => {
+            let start = ui.input(|i| i.time) as f32 * std::f32::consts::TAU * 1.2;
+            let points: Vec<Pos2> = (0..=24)
+                .map(|k| c + (r - 0.5) * Vec2::angled(start + k as f32 / 24.0 * std::f32::consts::TAU * 0.75))
+                .collect();
+            p.line(points, stroke(t.muted_foreground));
+        }
     }
 }

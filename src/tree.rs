@@ -1,12 +1,15 @@
 //! Tree view in the style of the shadcn sidebar file tree.
 
+use std::collections::HashSet;
+
 use egui::{
-    collapsing_header::CollapsingState, epaint::PathShape, Align2, CursorIcon, EventFilter, FontId,
-    Id, InnerResponse, Key, Painter, Pos2, Rect, Response, Sense, Shape, Stroke, Ui, Vec2,
-    WidgetInfo, WidgetType,
+    collapsing_header::CollapsingState, epaint::PathShape, Align2, Color32, CursorIcon, EventFilter,
+    FontId, Id, InnerResponse, Key, Painter, Pos2, Rect, Response, RichText, Sense, Shape, Stroke, Ui,
+    Vec2, WidgetInfo, WidgetType,
 };
 
 use crate::basic::paint_chevron;
+use crate::command::fuzzy_match;
 use crate::theme::{paint_focus_ring, Theme};
 
 const ROW_HEIGHT: f32 = 32.0;
@@ -31,16 +34,21 @@ const INDENT: f32 = 20.0;
 /// Left closes it. With multiple selection, Ctrl/Cmd+click toggles a row,
 /// Shift+click selects the range from the last clicked row, and Ctrl/Cmd+A
 /// selects every visible row.
+///
+/// Rows outside the visible area (with [`Tree::max_height`], or in an outer
+/// `ScrollArea`) are laid out but not drawn, so big trees stay cheap.
+/// [`Tree::filter`] shows only the rows that match a query.
 pub struct Tree {
     id: Id,
     open_depth: usize,
     icons: bool,
     max_height: Option<f32>,
+    filter: String,
 }
 
 impl Tree {
     pub fn new(id_salt: impl egui::AsId) -> Self {
-        Self { id: Id::new(id_salt), open_depth: 0, icons: true, max_height: None }
+        Self { id: Id::new(id_salt), open_depth: 0, icons: true, max_height: None, filter: String::new() }
     }
 
     /// Folders less than `depth` levels deep start open. Default 0: all closed.
@@ -61,6 +69,18 @@ impl Tree {
         self
     }
 
+    /// Shows only the rows whose label fuzzy-matches `query` (see
+    /// [`crate::fuzzy_match`]), with their folders opened; a matching folder
+    /// keeps all its children. An empty query shows everything.
+    ///
+    /// A folder's children are added by your closure after its row, so whether a
+    /// closed-off folder has matches is learnt while drawing; when that changes,
+    /// the tree asks for another frame and settles there.
+    pub fn filter(mut self, query: impl Into<String>) -> Self {
+        self.filter = query.into();
+        self
+    }
+
     /// Draws the tree. The response is marked changed when the selection changes.
     pub fn show<T: PartialEq + Clone, R>(
         self,
@@ -69,7 +89,23 @@ impl Tree {
         add_nodes: impl FnOnce(&mut TreeUi<'_, T>) -> R,
     ) -> InnerResponse<R> {
         let multiple = selected.multiple();
-        let mut shared = Shared { changed: false, multiple, order: Vec::new(), range_to: None, focused: false };
+        let folders_id = self.id.with("filter_folders");
+        let prev_folders = if self.filter.trim().is_empty() {
+            HashSet::new()
+        } else {
+            ui.data(|d| d.get_temp::<HashSet<Id>>(folders_id)).unwrap_or_default()
+        };
+        let mut shared = Shared {
+            changed: false,
+            multiple,
+            order: Vec::new(),
+            range_to: None,
+            focused: false,
+            filter: self.filter.trim().to_owned(),
+            matches: 0,
+            prev_folders,
+            folders: HashSet::new(),
+        };
         let max_height = self.max_height;
         let id = self.id;
         let draw = |ui: &mut Ui| {
@@ -84,6 +120,8 @@ impl Tree {
                     depth: 0,
                     open_depth: self.open_depth,
                     icons: self.icons,
+                    hidden: false,
+                    show_all: false,
                 };
                 add_nodes(&mut tree)
             })
@@ -99,6 +137,11 @@ impl Tree {
             }
             None => draw(ui),
         };
+
+        if !shared.filter.is_empty() {
+            let folders = std::mem::take(&mut shared.folders);
+            ui.data_mut(|d| d.insert_temp(folders_id, folders));
+        }
 
         // Shift+click and Ctrl+A need every visible row, so they are applied
         // after all rows have been laid out.
@@ -233,6 +276,13 @@ struct Shared<T> {
     range_to: Option<Id>,
     /// Whether any row of the tree has keyboard focus.
     focused: bool,
+    /// The trimmed filter query; empty when not filtering.
+    filter: String,
+    /// Rows matching the filter so far.
+    matches: usize,
+    /// Folders that had matching rows in the previous frame, and in this one.
+    prev_folders: HashSet<Id>,
+    folders: HashSet<Id>,
 }
 
 /// Draws a row's content; see [`TreeUi::leaf_ui`].
@@ -248,6 +298,28 @@ pub struct TreeUi<'a, T> {
     depth: usize,
     open_depth: usize,
     icons: bool,
+    /// Inside a folder hidden by the filter: rows are only counted, not drawn.
+    hidden: bool,
+    /// Inside a folder that matches the filter: rows are shown without filtering.
+    show_all: bool,
+}
+
+/// The color of a git status letter: green for added and untracked, red for
+/// deleted, amber for modified, blue for renamed or copied.
+pub fn git_status_color(theme: &Theme, status: &str) -> Color32 {
+    match status.trim().chars().next() {
+        Some('A' | 'U' | '?') => {
+            if theme.dark { Color32::from_rgb(74, 222, 128) } else { Color32::from_rgb(22, 163, 74) }
+        }
+        Some('D') => theme.destructive,
+        Some('M') => {
+            if theme.dark { Color32::from_rgb(250, 204, 21) } else { Color32::from_rgb(202, 138, 4) }
+        }
+        Some('R' | 'C') => {
+            if theme.dark { Color32::from_rgb(96, 165, 250) } else { Color32::from_rgb(37, 99, 235) }
+        }
+        _ => theme.muted_foreground,
+    }
 }
 
 impl<T: PartialEq + Clone> TreeUi<'_, T> {
@@ -258,8 +330,50 @@ impl<T: PartialEq + Clone> TreeUi<'_, T> {
 
     /// A row without children.
     pub fn leaf(&mut self, value: T, label: &str) -> Response {
+        self.leaf_impl(value, label, None)
+    }
+
+    /// A row without children with a git status letter (`M`, `A`, `D`, `R`, `U`, `?`)
+    /// on the right, colored by [`git_status_color`]. Deleted files are struck through.
+    pub fn leaf_status(&mut self, value: T, label: &str, status: &str) -> Response {
+        let t = Theme::get(self.ui.ctx());
+        let color = git_status_color(&t, status);
+        let deleted = status.trim().starts_with('D');
+        let status = status.to_owned();
+        let name = label.to_owned();
+        self.leaf_impl(
+            value,
+            label,
+            Some(Box::new(move |ui: &mut Ui| {
+                let mut text = RichText::new(name);
+                if deleted {
+                    text = text.strikethrough().color(t.muted_foreground);
+                }
+                ui.label(text);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(RichText::new(status).monospace().color(color));
+                });
+            })),
+        )
+    }
+
+    fn leaf_impl(&mut self, value: T, label: &str, content: RowContent<'_>) -> Response {
         let id = self.id.with(label);
-        self.row(id, value, label, None, None)
+        if !self.shared.filter.is_empty() && !self.show_all {
+            let hit = fuzzy_match(&self.shared.filter, label);
+            if hit {
+                self.shared.matches += 1;
+            }
+            if !hit || self.hidden {
+                return self.skipped(id);
+            }
+        }
+        self.row(id, value, label, None, content)
+    }
+
+    /// The response of a row the filter hides.
+    fn skipped(&mut self, id: Id) -> Response {
+        self.ui.interact(Rect::NOTHING, id.with("row"), Sense::hover())
     }
 
     /// A row without children whose content you draw: `add_contents` gets a
@@ -275,8 +389,7 @@ impl<T: PartialEq + Clone> TreeUi<'_, T> {
     /// });
     /// ```
     pub fn leaf_ui(&mut self, value: T, label: &str, add_contents: impl FnOnce(&mut Ui)) -> Response {
-        let id = self.id.with(label);
-        self.row(id, value, label, None, Some(Box::new(add_contents)))
+        self.leaf_impl(value, label, Some(Box::new(add_contents)))
     }
 
     /// A folder whose children are added by `add_children`, which only runs while it is open.
@@ -304,10 +417,60 @@ impl<T: PartialEq + Clone> TreeUi<'_, T> {
         add_children: impl FnOnce(&mut TreeUi<'_, T>),
     ) -> Response {
         let id = self.id.with(label);
+        let line_x = self.ui.max_rect().left() + self.depth as f32 * INDENT + 16.0;
+        let filtering = !self.shared.filter.is_empty() && !self.show_all;
+        let self_hit = filtering && fuzzy_match(&self.shared.filter, label);
+        if self_hit {
+            self.shared.matches += 1;
+            if self.hidden {
+                return self.skipped(id);
+            }
+        }
+        if filtering && !self_hit {
+            // Shown open if it had matches last frame; its children are always
+            // visited, to count their matches.
+            let before = self.shared.matches;
+            let shown = !self.hidden && self.shared.prev_folders.contains(&id);
+            let response = if shown {
+                let mut state = CollapsingState::load_with_default_open(self.ui.ctx(), id, true);
+                state.set_open(true); // not stored: the user's open state returns with the filter cleared
+                self.row(id, value, label, Some(&mut state), content)
+            } else {
+                self.skipped(id)
+            };
+            let top = response.rect.bottom();
+            let mut child = TreeUi {
+                ui: &mut *self.ui,
+                selected: &mut *self.selected,
+                shared: &mut *self.shared,
+                id,
+                root: self.root,
+                depth: self.depth + 1,
+                open_depth: self.open_depth,
+                icons: self.icons,
+                hidden: !shown,
+                show_all: false,
+            };
+            add_children(&mut child);
+            let has_matches = self.shared.matches > before;
+            if has_matches {
+                self.shared.folders.insert(id);
+            }
+            if has_matches != self.shared.prev_folders.contains(&id) {
+                self.ui.ctx().request_repaint();
+            }
+            let bottom = self.ui.min_rect().bottom();
+            if shown && bottom > top {
+                let t = Theme::get(self.ui.ctx());
+                self.ui.painter().vline(line_x, top..=bottom, Stroke::new(1.0, t.border));
+            }
+            return response;
+        }
+
         let mut state = CollapsingState::load_with_default_open(self.ui.ctx(), id, self.depth < self.open_depth);
         let response = self.row(id, value, label, Some(&mut state), content);
 
-        let line_x = self.ui.max_rect().left() + self.depth as f32 * INDENT + 16.0;
+        let show_all = self.show_all || self_hit;
         let body = state.show_body_unindented(self.ui, |ui| {
             let mut child = TreeUi {
                 ui,
@@ -318,6 +481,8 @@ impl<T: PartialEq + Clone> TreeUi<'_, T> {
                 depth: self.depth + 1,
                 open_depth: self.open_depth,
                 icons: self.icons,
+                hidden: false,
+                show_all,
             };
             add_children(&mut child);
         });
@@ -417,6 +582,9 @@ impl<T: PartialEq + Clone> TreeUi<'_, T> {
             self.selected.select_only(value.clone());
         }
         let is_selected = self.selected.is_selected(&value);
+        if !ui.is_rect_visible(full) {
+            return response; // scrolled out of view: nothing to draw
+        }
 
         let p = ui.painter();
         if is_selected || response.hovered() {

@@ -470,7 +470,15 @@ pub struct GitDemo {
     /// History filter and page.
     pub dates: DateRange,
     pub page: usize,
+    /// Find-in-diff query, the current hit, and the lines picked for staging.
+    pub diff_search: bool,
+    pub diff_query: String,
+    pub diff_match: usize,
+    pub diff_lines: std::collections::BTreeSet<usize>,
     fetching_until: f64,
+    diff_search_focus: bool,
+    fetch_toast: Option<ToastId>,
+    undo_toast: Option<ToastId>,
     file: Option<&'static str>,
     commits: Vec<Vec<String>>,
     graph: CommitGraph,
@@ -499,7 +507,14 @@ impl Default for GitDemo {
             file_filter: String::new(),
             dates: DateRange::default(),
             page: 0,
+            diff_search: false,
+            diff_query: String::new(),
+            diff_match: 0,
+            diff_lines: Default::default(),
             fetching_until: 0.0,
+            diff_search_focus: false,
+            fetch_toast: None,
+            undo_toast: None,
             file: Some("src/overlay.rs"),
             commits,
             graph,
@@ -533,11 +548,13 @@ impl GitDemo {
                         .empty("No branch found.")
                         .width(240.0));
                     if button_group(ui, &["Fetch", "Pull", "Push"]).iter().any(|r| r.clicked()) {
-                        self.fetching_until = now + 1.5;
+                        self.start_fetch(ctx);
                     }
                     if now < self.fetching_until {
                         ui.add(Spinner::new());
                         muted(ui, "Fetching origin…");
+                    } else if let Some(id) = self.fetch_toast.take() {
+                        Toast::new("Fetched origin").description("Already up to date.").success().update(ctx, id);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.add(Button::outline("Search commands…  ⌘K").size(ButtonSize::Sm)).clicked() {
@@ -566,7 +583,18 @@ impl GitDemo {
 
         self.palette(ctx);
         self.commit_sheet(ctx);
-        Toaster::show(ctx);
+        if let Some(id) = Toaster::show(ctx) {
+            if Some(id) == self.undo_toast.take() {
+                Toast::new("Changes restored").success().show(ctx);
+            }
+        }
+    }
+
+    fn start_fetch(&mut self, ctx: &Context) {
+        self.fetching_until = ctx.input(|i| i.time) + 1.5;
+        if self.fetch_toast.is_none() {
+            self.fetch_toast = Some(Toast::new("Fetching origin…").loading().show(ctx));
+        }
     }
 
     fn menu(&mut self, ui: &mut Ui) {
@@ -574,7 +602,7 @@ impl GitDemo {
             mb.menu("Repository", |ui| {
                 for (name, key) in [("Fetch", "⌘F"), ("Pull", "⌘P"), ("Push", "⇧⌘P")] {
                     if menu_item(ui, name, Some(key)).clicked() {
-                        self.fetching_until = ui.input(|i| i.time) + 1.5;
+                        self.start_fetch(ui.ctx());
                     }
                 }
                 menu_separator(ui);
@@ -648,6 +676,7 @@ impl GitDemo {
     fn changes(&mut self, ui: &mut Ui) {
         let t = Theme::get(ui.ctx());
         let before = self.file;
+        let mut discarded = None;
         egui::Frame::new().inner_margin(egui::Margin::same(12)).show(ui, |ui| {
             ui.add(InputGroup::new(&mut self.file_filter).placeholder("Filter files...").search_icon().clearable());
             ui.add_space(8.0);
@@ -664,15 +693,18 @@ impl GitDemo {
                                 ui.label(name);
                                 ui.label(RichText::new(*path).size(12.0).color(t.muted_foreground));
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    ui.label(RichText::new(*status).monospace().color(t.muted_foreground));
+                                    ui.label(RichText::new(*status).monospace().color(git_status_color(&t, status)));
                                 });
                             });
-                            file_menu(&row, path);
+                            discarded = discarded.or(file_menu(&row, path));
                         }
                     });
                 });
             }
         });
+        if discarded.is_some() {
+            self.undo_toast = discarded;
+        }
         if self.file != before {
             if let Some(f) = self.file {
                 self.open(f);
@@ -743,6 +775,17 @@ impl GitDemo {
                         if !filtered {
                             graph.paint(ui, i);
                         }
+                        true
+                    }
+                    1 => {
+                        let color = graph.lane_color(i);
+                        for (name, kind) in refs_for(i) {
+                            ui.add(RefBadge::new(*kind, *name).color(color));
+                        }
+                        // Painted, not a label: the table already exposes the cell text.
+                        let t = Theme::get(ui.ctx());
+                        let at = egui::pos2(ui.cursor().left(), ui.max_rect().center().y);
+                        ui.painter().text(at, egui::Align2::LEFT_CENTER, &commits[i][1], egui::FontId::proportional(14.0), t.foreground);
                         true
                     }
                     3 => {
@@ -841,8 +884,84 @@ impl GitDemo {
                 });
             });
         });
+        // Find in diff, and staging of single lines.
+        let lines_id = egui::Id::new("git_diff_lines_file");
+        if ui.data(|d| d.get_temp::<&'static str>(lines_id)) != Some(file) {
+            ui.data_mut(|d| d.insert_temp(lines_id, file));
+            self.diff_lines.clear();
+        }
+        let matches_id = egui::Id::new("git_diff_matches");
+        let matches: usize = ui.data(|d| d.get_temp(matches_id)).unwrap_or(0);
+        egui::Frame::new().inner_margin(egui::Margin { left: 12, right: 12, top: 0, bottom: 8 }).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                if !self.diff_search {
+                    if ui.add(Button::outline("Find in diff").size(ButtonSize::Sm)).clicked() {
+                        self.diff_search = true;
+                        self.diff_search_focus = true;
+                    }
+                } else {
+                    let before = self.diff_query.clone();
+                    let input = ui.add(InputGroup::new(&mut self.diff_query).placeholder("Find in diff...").search_icon().clearable().width(200.0));
+                    if self.diff_query != before {
+                        self.diff_match = 0;
+                    }
+                    if self.diff_search_focus {
+                        input.request_focus();
+                        self.diff_search_focus = false;
+                    }
+                    // Enter jumps to the next match and keeps typing in the field.
+                    if input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        if matches > 0 {
+                            self.diff_match = (self.diff_match + 1) % matches;
+                        }
+                        input.request_focus();
+                    }
+                    if ui.add(Button::ghost("Done").size(ButtonSize::Sm)).clicked() {
+                        self.diff_search = false;
+                        self.diff_query.clear();
+                    }
+                }
+                if self.diff_search && !self.diff_query.is_empty() {
+                    let shown = if matches == 0 { 0 } else { self.diff_match + 1 };
+                    muted(ui, format!("{shown} of {matches}"));
+                    let prev = ui.add_enabled(matches > 0, Button::ghost("⬆").size(ButtonSize::Icon)).on_hover_text("Previous match");
+                    let next = ui.add_enabled(matches > 0, Button::ghost("⬇").size(ButtonSize::Icon)).on_hover_text("Next match");
+                    if prev.clicked() {
+                        self.diff_match = (self.diff_match + matches - 1) % matches;
+                    }
+                    if next.clicked() {
+                        self.diff_match = (self.diff_match + 1) % matches;
+                    }
+                }
+            });
+            if !self.diff_lines.is_empty() {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    let n = self.diff_lines.len();
+                    let label = format!("Stage {n} line{}", if n == 1 { "" } else { "s" });
+                    if ui.add(Button::new(label).size(ButtonSize::Sm)).clicked() {
+                        let patch = partial_patch(&self.diffs[file], &self.diff_lines, false);
+                        let hunks = patch.lines().filter(|l| l.starts_with("@@")).count();
+                        Toast::new(format!("Staged {n} line{}", if n == 1 { "" } else { "s" }))
+                            .description(format!("git apply --cached: {hunks} hunk{} in {file}", if hunks == 1 { "" } else { "s" }))
+                            .success()
+                            .show(ui.ctx());
+                        self.diff_lines.clear();
+                    }
+                    if ui.add(Button::ghost("Unselect").size(ButtonSize::Sm)).clicked() {
+                        self.diff_lines.clear();
+                    }
+                });
+            }
+        });
         let diff = &self.diffs[file];
-        DiffView::new(("git_diff", file), diff).split(self.split_diff).show(ui);
+        let r = DiffView::new(("git_diff", file), diff)
+            .split(self.split_diff)
+            .selection(&mut self.diff_lines)
+            .search(&self.diff_query)
+            .current_match(self.diff_match)
+            .show(ui);
+        ui.data_mut(|d| d.insert_temp(matches_id, r.matches));
     }
 
     fn palette(&mut self, ctx: &Context) {
@@ -885,7 +1004,9 @@ impl GitDemo {
     }
 }
 
-fn file_menu(row: &egui::Response, path: &str) {
+/// The file's context menu; returns the toast of a discard, which offers Undo.
+fn file_menu(row: &egui::Response, path: &str) -> Option<ToastId> {
+    let mut discarded = None;
     context_menu(row, 200.0, |ui| {
         if menu_item(ui, "Stage", None).clicked() {
             toast(ui.ctx(), "Staged", Some(path));
@@ -893,7 +1014,18 @@ fn file_menu(row: &egui::Response, path: &str) {
         menu_item(ui, "Open in editor", None);
         menu_separator(ui);
         if menu_item(ui, "Discard changes", None).clicked() {
-            toast_error(ui.ctx(), "Changes discarded", Some(path));
+            discarded = Some(Toast::new("Changes discarded").description(path).error().action("Undo").show(ui.ctx()));
         }
     });
+    discarded
+}
+
+/// Branch and tag labels of commit `i` (newest first).
+fn refs_for(i: usize) -> &'static [(&'static str, RefKind)] {
+    match i {
+        0 => &[("main", RefKind::Head), ("origin/main", RefKind::Remote)],
+        1 => &[("feature/git-widgets", RefKind::Branch)],
+        3 => &[("v0.1.0", RefKind::Tag)],
+        _ => &[],
+    }
 }

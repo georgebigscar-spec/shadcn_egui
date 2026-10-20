@@ -1,7 +1,7 @@
 //! Commit graph lanes, drawn one row at a time (for a DataTable column).
 
 use egui::epaint::CubicBezierShape;
-use egui::{Color32, Pos2, Rect, Stroke, Ui};
+use egui::{Color32, FontId, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Ui, Vec2, Widget, WidgetInfo, WidgetType};
 
 use crate::theme::Theme;
 
@@ -126,6 +126,12 @@ impl CommitGraph {
         self.lanes as f32 * self.lane_width + 12.0
     }
 
+    /// The color of the lane that commit `row` sits on, to color its [`RefBadge`]s.
+    pub fn lane_color(&self, row: usize) -> Color32 {
+        let lane = self.rows.get(row).map_or(0, |r| r.lane);
+        LANES[lane % LANES.len()]
+    }
+
     /// Paints row `row` into the whole of `ui.max_rect()` (a DataTable cell).
     pub fn paint(&self, ui: &Ui, row: usize) {
         let Some(r) = self.rows.get(row) else { return };
@@ -165,6 +171,94 @@ impl CommitGraph {
         } else {
             p.circle_filled(c, 4.0, color(r.lane));
         }
+    }
+}
+
+/// What a [`RefBadge`] names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefKind {
+    /// The checked-out branch: filled.
+    Head,
+    /// A local branch: outlined in the lane color.
+    Branch,
+    /// A remote-tracking branch such as `origin/main`: dimmer outline.
+    Remote,
+    /// A tag: muted, with a tag mark.
+    Tag,
+}
+
+/// A branch or tag label for a commit row, in the color of its graph lane.
+///
+/// ```ignore
+/// .cell_ui(|ui, row, col| match col {
+///     1 => {
+///         ui.add(RefBadge::head("main").color(graph.lane_color(row)));
+///         ui.add(RefBadge::tag("v0.1.0"));
+///         ui.label(&commits[row].subject);
+///         true
+///     }
+///     _ => false,
+/// })
+/// ```
+#[must_use = "add it with `ui.add(...)`"]
+pub struct RefBadge {
+    name: String,
+    kind: RefKind,
+    color: Option<Color32>,
+}
+
+impl RefBadge {
+    pub fn new(kind: RefKind, name: impl Into<String>) -> Self {
+        Self { name: name.into(), kind, color: None }
+    }
+    pub fn head(name: impl Into<String>) -> Self {
+        Self::new(RefKind::Head, name)
+    }
+    pub fn branch(name: impl Into<String>) -> Self {
+        Self::new(RefKind::Branch, name)
+    }
+    pub fn remote(name: impl Into<String>) -> Self {
+        Self::new(RefKind::Remote, name)
+    }
+    pub fn tag(name: impl Into<String>) -> Self {
+        Self::new(RefKind::Tag, name)
+    }
+    /// The lane color ([`CommitGraph::lane_color`]); defaults to the first lane's blue.
+    pub fn color(mut self, color: Color32) -> Self {
+        self.color = Some(color);
+        self
+    }
+}
+
+impl Widget for RefBadge {
+    fn ui(self, ui: &mut Ui) -> Response {
+        let t = Theme::get(ui.ctx());
+        let color = self.color.unwrap_or(LANES[0]);
+        let (fill, fg, stroke) = match self.kind {
+            RefKind::Head => (color, Color32::WHITE, Stroke::NONE),
+            RefKind::Branch => (color.gamma_multiply(0.12), color, Stroke::new(1.0, color.gamma_multiply(0.6))),
+            RefKind::Remote => (Color32::TRANSPARENT, color.gamma_multiply(0.85), Stroke::new(1.0, color.gamma_multiply(0.35))),
+            RefKind::Tag => (t.muted, t.foreground, Stroke::new(1.0, t.border)),
+        };
+        let font = FontId::proportional(11.5);
+        let galley = ui.painter().layout_no_wrap(self.name.clone(), font, fg);
+        let mark = if self.kind == RefKind::Tag { 12.0 } else { 0.0 };
+        let size = Vec2::new(galley.size().x + 12.0 + mark, 18.0);
+        let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &self.name));
+        if ui.is_rect_visible(rect) {
+            let p = ui.painter();
+            p.rect(rect, t.radius_sm(), fill, stroke, StrokeKind::Inside);
+            if mark > 0.0 {
+                // A small tag: a square turned 45 degrees with a hole.
+                let c = Pos2::new(rect.left() + 10.0, rect.center().y);
+                let r = 3.5;
+                let pts = vec![c + Vec2::new(0.0, -r), c + Vec2::new(r, 0.0), c + Vec2::new(0.0, r), c + Vec2::new(-r, 0.0)];
+                p.add(egui::Shape::closed_line(pts, Stroke::new(1.2, t.muted_foreground)));
+            }
+            p.galley(Pos2::new(rect.left() + 6.0 + mark, rect.center().y - galley.size().y / 2.0), galley, fg);
+        }
+        response
     }
 }
 
