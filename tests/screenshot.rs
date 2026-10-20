@@ -635,3 +635,46 @@ fn merge_conflicts() {
     assert!(!h.state().open_files.contains(&"src/theme.rs"));
     assert!(h.query_by_label("Conflicts resolved").is_some());
 }
+
+fn settings(dark: bool) -> Harness<'static, shadcn_egui::demo::SettingsDemo> {
+    let state = shadcn_egui::demo::SettingsDemo { dark, ..Default::default() };
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1240.0, 820.0))
+        .build_ui_state(|ui, s: &mut shadcn_egui::demo::SettingsDemo| s.ui(ui), state);
+    h.run_steps(4);
+    h
+}
+
+/// Field, Item, InputOtp, ScrollArea and typography; the code box is focused
+/// and half filled, the "Add account" item is hovered.
+#[test]
+fn settings_light() {
+    let mut h = settings(false);
+    h.get_by_label("One-time code").click();
+    h.run_steps(2);
+    h.event(egui::Event::Text("12a3".into()));
+    h.run_steps(2);
+    assert_eq!(h.state().code, "123");
+    h.get_all_by_label("Add account").next().unwrap().hover(); // the row; its title repeats the text
+    h.run_steps(4);
+    h.snapshot("settings_light");
+}
+
+#[test]
+fn settings_dark() {
+    let mut h = settings(true);
+    h.get_by_label("One-time code").click();
+    h.run_steps(2);
+    h.event(egui::Event::Paste("987 654".into()));
+    h.run_steps(2);
+    h.event(egui::Event::Key {
+        key: egui::Key::Backspace,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run_steps(4);
+    assert_eq!(h.state().code, "98765");
+    h.snapshot("settings_dark");
+}

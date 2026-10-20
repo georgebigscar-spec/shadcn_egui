@@ -1140,3 +1140,160 @@ fn refs_for(i: usize) -> &'static [(&'static str, RefKind)] {
         _ => &[],
     }
 }
+
+// ---------------------------------------------------------------------------
+
+/// A settings page built from Field, Item, InputOtp, ScrollArea and the
+/// typography helpers; used by the `settings` example and the screenshot test.
+pub struct SettingsDemo {
+    pub dark: bool,
+    pub name: String,
+    pub email: String,
+    pub auto_fetch: bool,
+    pub sign_commits: bool,
+    pub code: String,
+    pub tag: Option<usize>,
+}
+
+impl Default for SettingsDemo {
+    fn default() -> Self {
+        Self {
+            dark: false,
+            name: "Pedro Duarte".into(),
+            email: "pedro@".into(),
+            auto_fetch: true,
+            sign_commits: false,
+            code: String::new(),
+            tag: None,
+        }
+    }
+}
+
+const REMOTES: [(&str, &str); 3] = [
+    ("origin", "git@github.com:shadcn/ui.git"),
+    ("upstream", "https://github.com/emilk/egui.git"),
+    ("backup", "ssh://nas.local/srv/git/ui.git"),
+];
+
+impl SettingsDemo {
+    pub fn ui(&mut self, ui: &mut Ui) {
+        let ctx = &ui.ctx().clone();
+        let theme = if self.dark { Theme::dark() } else { Theme::light() };
+        if Theme::installed(ctx).as_ref() != Some(&theme) {
+            theme.install(ctx);
+        }
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(Theme::get(ctx).background).inner_margin(32))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    h2(ui, "Settings");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add(Switch::new(&mut self.dark).label("Dark mode"));
+                    });
+                });
+                lead(ui, "Manage your identity, remotes and sign-in.");
+                ui.add_space(16.0);
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = 32.0;
+                    ui.vertical(|ui| {
+                        ui.set_width(340.0);
+                        self.identity(ui);
+                    });
+                    ui.vertical(|ui| {
+                        ui.set_width(380.0);
+                        self.remotes(ui);
+                    });
+                    ui.vertical(|ui| {
+                        ui.set_width(340.0);
+                        self.docs(ui);
+                    });
+                });
+            });
+    }
+
+    fn identity(&mut self, ui: &mut Ui) {
+        FieldSet::new("Identity").description("Used as the author of your commits.").show(ui, |ui| {
+            Field::new("Name").required().show(ui, |ui| ui.add(Input::new(&mut self.name)));
+            let error = (!self.email.contains('@') || self.email.ends_with('@')).then_some("Enter a valid email address.");
+            Field::new("Email")
+                .description("Shown in git log.")
+                .error(error)
+                .required()
+                .show(ui, |ui| ui.add(Input::new(&mut self.email).placeholder("m@example.com").invalid(error.is_some())));
+        });
+        ui.add_space(16.0);
+        field_separator(ui, Some("Behaviour"));
+        ui.add_space(16.0);
+        Field::new("Auto fetch")
+            .description("Fetch all remotes every 5 minutes.")
+            .horizontal()
+            .show(ui, |ui| ui.add(Switch::new(&mut self.auto_fetch)));
+        ui.add_space(12.0);
+        Field::new("Sign commits")
+            .description("Sign with your SSH key.")
+            .horizontal()
+            .show(ui, |ui| ui.add(Switch::new(&mut self.sign_commits)));
+        ui.add_space(24.0);
+        Field::new("Verification code")
+            .description("Enter the 6-digit code from your authenticator app.")
+            .show(ui, |ui| ui.add(InputOtp::new(&mut self.code, 6).groups(&[3, 3])));
+    }
+
+    fn remotes(&mut self, ui: &mut Ui) {
+        h4(ui, "Remotes");
+        ui.add_space(4.0);
+        for (name, url) in REMOTES {
+            Item::new(name).description(url).icon("🔗").outline().show(ui, |ui| {
+                ui.add(Button::outline("Fetch").size(ButtonSize::Sm));
+            });
+        }
+        ui.add_space(8.0);
+        h4(ui, "Accounts");
+        ui.add_space(4.0);
+        Item::new("Pedro Duarte").description("pedro@example.com · GitHub").avatar("PD").muted().show(ui, |ui| {
+            ui.add(Badge::new("Default").secondary());
+        });
+        Item::new("Add account").description("GitHub, GitLab or Bitbucket").icon("+").small().clickable().show(ui, |ui| {
+            ui.label(RichText::new("›").size(18.0).color(Theme::get(ui.ctx()).muted_foreground));
+        });
+        ui.add_space(8.0);
+        h4(ui, "Tags");
+        ui.add_space(4.0);
+        let t = Theme::get(ui.ctx());
+        egui::Frame::new()
+            .stroke(egui::Stroke::new(1.0, t.border))
+            .corner_radius(t.radius_md())
+            .show(ui, |ui| {
+                ScrollArea::vertical().max_height(150.0).always_visible().auto_shrink([false, true]).show(ui, |ui| {
+                    egui::Frame::new().inner_margin(16).show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 8.0;
+                        for i in 0..20 {
+                            let tag = format!("v1.{}.{}", 9 - i / 4, (i * 3) % 7);
+                            let selected = self.tag == Some(i);
+                            let text = RichText::new(tag).size(14.0).color(if selected { t.foreground } else { t.muted_foreground });
+                            if ui.add(egui::Label::new(text).sense(egui::Sense::click())).clicked() {
+                                self.tag = Some(i);
+                            }
+                            separator(ui);
+                        }
+                    });
+                });
+            });
+    }
+
+    fn docs(&mut self, ui: &mut Ui) {
+        h3(ui, "About signing");
+        p(ui, "Signed commits show a Verified badge on GitHub. Git signs each commit with the key you choose, so other people can check that you made it.");
+        ui.add_space(4.0);
+        blockquote(ui, "\"A commit you did not sign is a commit anyone could have made.\"");
+        ui.add_space(4.0);
+        large(ui, "You will need");
+        list(ui, &["An SSH or GPG key", "The key added to your GitHub account", "Git 2.34 or newer for SSH keys"]);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            label(ui, "Turn it on with");
+            inline_code(ui, "git config commit.gpgsign true");
+        });
+        small(ui, "Changes apply to this repository only.");
+    }
+}
