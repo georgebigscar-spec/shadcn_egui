@@ -16,15 +16,18 @@ mod calendar;
 mod command;
 mod data_table;
 mod diff;
+mod field;
 mod form;
 mod graph;
 mod layout;
 mod merge;
+mod otp;
 mod overlay;
 mod resizable;
 mod sidebar;
 mod theme;
 mod tree;
+mod typography;
 
 pub use basic::{h1, h2, h3, kbd, label, muted, separator, Avatar, Badge, BadgeVariant, Empty, Progress, Skeleton, Spinner};
 pub use button::{Button, ButtonSize, ButtonVariant};
@@ -32,10 +35,12 @@ pub use calendar::{days_in_month, Calendar, Date, DatePicker, DateRange, DateRan
 pub use command::{fuzzy_match, Combobox, Command, CommandResponse, CommandUi};
 pub use data_table::{Column, DataTable, DataTableResponse};
 pub use diff::{partial_patch, DiffView, DiffViewResponse};
+pub use field::{field_separator, Field, FieldSet, Item, ItemResponse, ItemVariant};
 pub use form::{button_group, radio_group, toggle_group, InputGroup, Checkbox, Input, RadioItem, Slider, Switch, Textarea, Toggle};
 pub use graph::{CommitGraph, RefBadge, RefKind};
 pub use layout::{breadcrumb, pagination, tabs, Accordion, Alert, Card, Collapsible, TabBar, TabBarResponse, Table};
 pub use merge::{count_conflicts, resolve_conflicts, MergeView, MergeViewResponse, Resolution};
+pub use otp::InputOtp;
 pub use overlay::{
     alert_dialog, context_menu, dropdown_menu, footer, hover_card, menu_checkbox, menu_item, menu_label,
     menu_separator, menubar, popover, toast, toast_error, Dialog, DialogResponse, MenubarUi, Select, Sheet,
@@ -45,5 +50,6 @@ pub use resizable::Resizable;
 pub use sidebar::{Sidebar, SidebarUi};
 pub use theme::{mix, paint_focus_ring, Theme};
 pub use tree::{git_status_color, Tree, TreeSelection, TreeUi};
+pub use typography::{blockquote, h4, inline_code, large, lead, list, p, small, ScrollArea};
 
 pub mod demo;

@@ -13,6 +13,7 @@
 ```sh
 cargo run --example gallery     # demo gallery on eframe
 cargo run --example git_client  # a git client layout: sidebar, commit graph, diff, tabs, Ctrl+K palette
+cargo run --example settings    # a settings page: Field, Item, InputOtp, ScrollArea, typography
 UPDATE_SNAPSHOTS=1 cargo test   # re-render the screenshots in tests/snapshots/
 ```
 
@@ -59,6 +60,11 @@ Toaster::show(ctx); // once per frame, if you use toasts
 | Input | `Input::new(&mut s).placeholder(..).password().invalid(bool).width(..)` | red border and ring when `invalid` |
 | Textarea | `Textarea::new(&mut s).rows(n)` | |
 | Label | `label(ui, ..)`, `muted(ui, ..)`, `h1/h2/h3` | |
+| Typography | `h4`, `p`, `lead`, `large`, `small`, `blockquote`, `list(ui, &[..])`, `inline_code` | `p`, `lead`, `blockquote` and list items wrap |
+| Field | `Field::new("Email").description(..).error(Option<..>).required().show(ui, \|ui\| ui.add(Input::new(..)))`, `.horizontal()` for switches; `FieldSet::new("Legend").description(..).show(ui, ..)`, `field_separator(ui, Some("Or"))` | an error turns the label red and replaces the description |
+| Input OTP | `InputOtp::new(&mut code, 6).groups(&[3, 3]).alphanumeric().invalid(bool)` | typing, Backspace (Ctrl+Backspace clears) and paste; `changed()` on every edit |
+| Item | `Item::new("origin").description(url).icon("🔗")` or `.avatar("PD")`, `.outline() / .muted() / .small() / .clickable()`, `.show(ui, \|ui\| actions)` | actions on the right, returns the row's response |
+| Scroll Area | `ScrollArea::vertical().max_height(h).always_visible().show(ui, ..)` | thin floating thumb in the border color, shown on hover; `.with(\|s\| ..)` for other `egui::ScrollArea` settings |
 | Checkbox | `Checkbox::new(&mut b).label(..)` | |
 | Switch | `Switch::new(&mut b).label(..)` | animated |
 | Radio Group | `radio_group(ui, &mut v, &[(val, "Label"), ..])`, `RadioItem` | any `PartialEq` value |
@@ -110,7 +116,7 @@ Toaster::show(ctx); // once per frame, if you use toasts
 ## Limitations
 
 - egui's default font has no bold weight, so headings are not bold. For an exact look, load Inter or Geist with `ctx.set_fonts` and give headings their own font family.
-- Not implemented yet: Navigation Menu, Carousel, Chart, Input OTP. For charts there is the `egui_plot` crate.
+- Not implemented yet: Navigation Menu, Carousel, Chart, Drawer (use `Sheet` from the bottom). For charts there is the `egui_plot` crate.
 - Colors are hex approximations of the shadcn v4 oklch variables; every field of `Theme` can be changed.
 
 ## License
