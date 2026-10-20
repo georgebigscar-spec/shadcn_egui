@@ -369,6 +369,54 @@ const BRANCHES: [&str; 6] = [
 const CHANGES: [(&str, &str); 4] =
     [("src/command.rs", "A"), ("src/graph.rs", "A"), ("src/overlay.rs", "M"), ("README.md", "M")];
 
+/// A file left with merge conflicts by `git merge feature/theme-tokens`.
+const CONFLICTED: &str = "src/theme.rs";
+
+fn conflict_text() -> String {
+    [
+        "//! Colors and sizes from the shadcn neutral palette.",
+        "",
+        "use egui::{Color32, Context, CornerRadius};",
+        "",
+        "#[derive(Clone, Debug, PartialEq)]",
+        "pub struct Theme {",
+        "    pub dark: bool,",
+        "    pub background: Color32,",
+        "    pub foreground: Color32,",
+        "<<<<<<< HEAD",
+        "    pub card: Color32,",
+        "    pub card_foreground: Color32,",
+        "||||||| 7d91f08",
+        "    pub card: Color32,",
+        "=======",
+        "    pub surface: Color32,",
+        "    pub surface_foreground: Color32,",
+        "    pub surface_border: Color32,",
+        ">>>>>>> feature/theme-tokens",
+        "    pub primary: Color32,",
+        "    pub primary_foreground: Color32,",
+        "    pub muted: Color32,",
+        "    pub muted_foreground: Color32,",
+        "    pub border: Color32,",
+        "    pub ring: Color32,",
+        "    /// Base radius, like `--radius`.",
+        "    pub radius: f32,",
+        "}",
+        "",
+        "impl Theme {",
+        "    pub fn radius_md(&self) -> CornerRadius {",
+        "<<<<<<< HEAD",
+        "        CornerRadius::same((self.radius - 2.0) as u8)",
+        "=======",
+        "        CornerRadius::same((self.radius * 0.8).round() as u8)",
+        ">>>>>>> feature/theme-tokens",
+        "    }",
+        "}",
+    ]
+    .join("\n")
+        + "\n"
+}
+
 /// (id, parents, subject, author), newest first.
 const HISTORY: [(&str, &[&str], &str, &str); 10] = [
     ("4f1c2a9", &["9b0e7d1", "c3d8e45"], "Merge branch 'feature/git-widgets'", "George"),
@@ -477,6 +525,10 @@ pub struct GitDemo {
     pub diff_lines: std::collections::BTreeSet<usize>,
     fetching_until: f64,
     diff_search_focus: bool,
+    /// The merge conflicts in [`CONFLICTED`], and the one to scroll to.
+    pub resolutions: Vec<Resolution>,
+    pub conflict: usize,
+    pub conflicts_done: bool,
     fetch_toast: Option<ToastId>,
     undo_toast: Option<ToastId>,
     file: Option<&'static str>,
@@ -513,6 +565,9 @@ impl Default for GitDemo {
             diff_lines: Default::default(),
             fetching_until: 0.0,
             diff_search_focus: false,
+            resolutions: Vec::new(),
+            conflict: 0,
+            conflicts_done: false,
             fetch_toast: None,
             undo_toast: None,
             file: Some("src/overlay.rs"),
@@ -684,7 +739,13 @@ impl GitDemo {
             let visible: Vec<(&str, &str)> = CHANGES.iter().copied().filter(|(p, _)| fuzzy_match(&query, p)).collect();
             let staged: Vec<_> = visible.iter().filter(|(p, _)| *p == "README.md").copied().collect();
             let unstaged: Vec<_> = visible.iter().filter(|(p, _)| *p != "README.md").copied().collect();
-            for (title, files) in [("Staged changes", staged), ("Changes", unstaged)] {
+            let conflicted: Vec<(&str, &str)> =
+                if self.conflicts_done || !fuzzy_match(&query, CONFLICTED) { vec![] } else { vec![(CONFLICTED, "U")] };
+            let mut groups = vec![("Staged changes", staged), ("Changes", unstaged)];
+            if !self.conflicts_done {
+                groups.insert(0, ("Merge conflicts", conflicted));
+            }
+            for (title, files) in groups {
                 Collapsible::new(("git_group", title), title).trailing(files.len().to_string()).show(ui, |ui| {
                     Tree::new(("git_files", title)).icons(true).show(ui, &mut self.file, |tree| {
                         for (path, status) in &files {
@@ -850,6 +911,10 @@ impl GitDemo {
                 self.file = None;
             }
         }
+        if self.open_files.get(self.active_file) == Some(&CONFLICTED) {
+            self.merge_details(ui);
+            return;
+        }
         let Some(file) = self.open_files.get(self.active_file).copied() else {
             ui.add_space(40.0);
             Empty::new("No open files")
@@ -962,6 +1027,52 @@ impl GitDemo {
             .current_match(self.diff_match)
             .show(ui);
         ui.data_mut(|d| d.insert_temp(matches_id, r.matches));
+    }
+
+    /// The conflicted file: MergeView with conflict navigation and "Mark as resolved".
+    fn merge_details(&mut self, ui: &mut Ui) {
+        let text = conflict_text();
+        let conflicts = count_conflicts(&text);
+        let resolved = self.resolutions.iter().filter(|r| **r != Resolution::Unresolved).count();
+        egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let mut path: Vec<&str> = vec!["shadcn_egui"];
+                path.extend(CONFLICTED.split('/'));
+                if breadcrumb(ui, &path) == Some(0) {
+                    self.view = GitView::Changes;
+                }
+                ui.add_space(8.0);
+                ui.add(Badge::new(format!("{resolved} of {conflicts} resolved")).secondary());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let done = ui.add_enabled(resolved == conflicts, Button::new("Mark as resolved").size(ButtonSize::Sm));
+                    if done.clicked() {
+                        let merged = resolve_conflicts(&text, &self.resolutions).unwrap_or_default();
+                        Toast::new("Conflicts resolved")
+                            .description(format!("{CONFLICTED} staged, {} lines", merged.lines().count()))
+                            .success()
+                            .show(ui.ctx());
+                        self.conflicts_done = true;
+                    }
+                    let next = ui.add(Button::ghost("⬇").size(ButtonSize::Icon)).on_hover_text("Next conflict");
+                    let prev = ui.add(Button::ghost("⬆").size(ButtonSize::Icon)).on_hover_text("Previous conflict");
+                    if next.clicked() {
+                        self.conflict = (self.conflict + 1) % conflicts.max(1);
+                    }
+                    if prev.clicked() {
+                        self.conflict = (self.conflict + conflicts.max(1) - 1) % conflicts.max(1);
+                    }
+                });
+            });
+        });
+        if self.conflicts_done {
+            self.open_files.retain(|f| *f != CONFLICTED);
+            self.active_file = self.active_file.min(self.open_files.len().saturating_sub(1));
+            if self.file == Some(CONFLICTED) {
+                self.file = None;
+            }
+            return;
+        }
+        MergeView::new("git_merge", &text).scroll_to_conflict(self.conflict).show(ui, &mut self.resolutions);
     }
 
     fn palette(&mut self, ctx: &Context) {

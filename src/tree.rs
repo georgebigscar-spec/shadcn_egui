@@ -304,14 +304,15 @@ pub struct TreeUi<'a, T> {
     show_all: bool,
 }
 
-/// The color of a git status letter: green for added and untracked, red for
-/// deleted, amber for modified, blue for renamed or copied.
+/// The color of a git status letter: green for added (`A`) and untracked (`?`),
+/// red for deleted (`D`) and unmerged (`U`, a conflict), amber for modified
+/// (`M`), blue for renamed or copied (`R`, `C`).
 pub fn git_status_color(theme: &Theme, status: &str) -> Color32 {
     match status.trim().chars().next() {
-        Some('A' | 'U' | '?') => {
+        Some('A' | '?') => {
             if theme.dark { Color32::from_rgb(74, 222, 128) } else { Color32::from_rgb(22, 163, 74) }
         }
-        Some('D') => theme.destructive,
+        Some('D' | 'U') => theme.destructive,
         Some('M') => {
             if theme.dark { Color32::from_rgb(250, 204, 21) } else { Color32::from_rgb(202, 138, 4) }
         }
