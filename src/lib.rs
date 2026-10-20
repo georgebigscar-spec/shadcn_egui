@@ -19,6 +19,7 @@ mod diff;
 mod form;
 mod graph;
 mod layout;
+mod merge;
 mod overlay;
 mod resizable;
 mod sidebar;
@@ -34,6 +35,7 @@ pub use diff::{partial_patch, DiffView, DiffViewResponse};
 pub use form::{button_group, radio_group, toggle_group, InputGroup, Checkbox, Input, RadioItem, Slider, Switch, Textarea, Toggle};
 pub use graph::{CommitGraph, RefBadge, RefKind};
 pub use layout::{breadcrumb, pagination, tabs, Accordion, Alert, Card, Collapsible, TabBar, TabBarResponse, Table};
+pub use merge::{count_conflicts, resolve_conflicts, MergeView, MergeViewResponse, Resolution};
 pub use overlay::{
     alert_dialog, context_menu, dropdown_menu, footer, hover_card, menu_checkbox, menu_item, menu_label,
     menu_separator, menubar, popover, toast, toast_error, Dialog, DialogResponse, MenubarUi, Select, Sheet,

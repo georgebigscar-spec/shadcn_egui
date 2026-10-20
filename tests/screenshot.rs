@@ -610,3 +610,28 @@ fn toasts_update_and_undo() {
     h.run_steps(4);
     assert!(h.query_by_label("Changes restored").is_some());
 }
+
+/// Merge conflicts: accept a side per block, then mark the file resolved.
+#[test]
+fn merge_conflicts() {
+    use shadcn_egui::Resolution;
+    let mut h = git(false);
+    h.state_mut().sizes = [0.18, 0.3, 0.52];
+    h.get_by_label("Changes").click();
+    h.run_steps(2);
+    h.get_all_by_label("src/theme.rs").next().unwrap().click();
+    h.run_steps(4);
+    assert_eq!(h.query_all_by_label("Accept incoming").count(), 2, "one per conflict");
+    h.get_all_by_label("Accept incoming").next().unwrap().click();
+    h.run_steps(4);
+    assert_eq!(h.state().resolutions, [Resolution::Incoming, Resolution::Unresolved]);
+    h.snapshot("merge_conflicts");
+    h.get_by_label("Accept current").click(); // only the second block still offers it
+    h.run_steps(4);
+    assert_eq!(h.state().resolutions, [Resolution::Incoming, Resolution::Current]);
+    h.get_by_label("Mark as resolved").click();
+    h.run_steps(4);
+    assert!(h.state().conflicts_done);
+    assert!(!h.state().open_files.contains(&"src/theme.rs"));
+    assert!(h.query_by_label("Conflicts resolved").is_some());
+}
